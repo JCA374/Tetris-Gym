@@ -12,6 +12,7 @@ def manual_play():
     try:
         # Create Atari Tetris environment using modern Gymnasium
         # This automatically handles ROM licensing
+        import gymnasium as gym
         env = gym.make("ALE/Tetris-v5", render_mode="human")
 
         print("✅ Environment created successfully!")
@@ -119,6 +120,39 @@ def manual_play():
             pass
 
 
+def check_installation():
+    """Check if all required packages are properly installed"""
+    print("Checking installation...")
+
+    try:
+        import gymnasium as gym
+        print("✅ gymnasium imported successfully")
+    except ImportError as e:
+        print(f"❌ gymnasium import failed: {e}")
+        return False
+
+    try:
+        import ale_py
+        print("✅ ale_py imported successfully")
+    except ImportError as e:
+        print(f"❌ ale_py import failed: {e}")
+        print("Try: pip install ale-py")
+        return False
+
+    try:
+        # Test if ALE environments are available
+        import gymnasium as gym
+        env_id = "ALE/Tetris-v5"
+        print(f"Testing environment: {env_id}")
+        env = gym.make(env_id, render_mode="rgb_array")
+        env.close()
+        print("✅ ALE/Tetris-v5 environment created successfully")
+        return True
+    except Exception as e:
+        print(f"❌ Environment creation failed: {e}")
+        return False
+
+
 def test_environment_only():
     """
     Just test if the environment can be created and reset without manual input.
@@ -126,6 +160,7 @@ def test_environment_only():
     print("Testing environment creation...")
 
     try:
+        import gymnasium as gym
         env = gym.make("ALE/Tetris-v5", render_mode="rgb_array")
 
         print("✅ Environment created successfully!")
@@ -172,6 +207,8 @@ def test_environment_only():
 
     except Exception as e:
         print(f"❌ Environment test failed: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
