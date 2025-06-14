@@ -1,0 +1,18 @@
+# Core ML/RL libraries
+torch>=1.12.0
+numpy>=1.21.0
+matplotlib>=3.5.0
+
+# Gym and Tetris environment
+gym>=0.21.0
+gym-tetris>=1.0.0
+nes-py>=8.2.0
+
+# Additional utilities
+opencv-python>=4.5.0
+pillow>=8.3.0
+tqdm>=4.62.0
+
+# Optional: for logging and visualization
+tensorboard>=2.8.0
+wandb>=0.12.0

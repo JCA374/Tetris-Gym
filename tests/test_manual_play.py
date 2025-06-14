@@ -1,44 +1,191 @@
-import gym_tetris                     # ← must import before making any tetris envs!
-from gym_tetris.actions import SIMPLE_MOVEMENT
-from nes_py.wrappers import JoypadSpace
+import gymnasium as gym
+import numpy as np
 
 
 def manual_play():
     """
-    Launches the Tetris environment from gym-tetris and lets
-    you play by typing the index of the action you want.
+    Launches a modern Atari Tetris environment using Gymnasium.
+    No ROM files needed - uses the built-in Atari environments.
     """
-    # Use gym_tetris.make, not gym.make("ALE/Tetris-v5")
-    env = JoypadSpace(gym_tetris.make("TetrisA-v0"), SIMPLE_MOVEMENT)
+    print("Setting up Tetris environment...")
 
-    print("Available actions (index → button combo):")
-    for i, combo in enumerate(SIMPLE_MOVEMENT):
-        print(f"  {i}: {combo}")
-    print("Type the action index each frame (or 'q' to quit).")
-
-    state, done = env.reset(), False
     try:
+        # Create Atari Tetris environment using modern Gymnasium
+        # This automatically handles ROM licensing
+        env = gym.make("ALE/Tetris-v5", render_mode="human")
+
+        print("✅ Environment created successfully!")
+        print(f"Observation space: {env.observation_space}")
+        print(f"Action space: {env.action_space}")
+        print(f"Available actions: {env.unwrapped.get_action_meanings()}")
+
+    except Exception as e:
+        print(f"❌ Error creating environment: {e}")
+        print("Make sure you have gymnasium with Atari support installed:")
+        print("pip install 'gymnasium[atari,accept-rom-license]'")
+        return
+
+    action_meanings = env.unwrapped.get_action_meanings()
+    print(f"\nAvailable actions ({len(action_meanings)} total):")
+    for i, action_name in enumerate(action_meanings):
+        print(f"  {i}: {action_name}")
+    print("\nControls:")
+    print(f"  Type the action index each frame (0-{len(action_meanings)-1})")
+    print("  Type 'q' to quit")
+    print("  Type 'r' to reset the game")
+    print("-" * 40)
+
+    try:
+        # Reset environment
+        state = env.reset()
+        if isinstance(state, tuple):  # Handle new gym API
+            state = state[0]
+
+        done = False
+        step_count = 0
+        total_reward = 0
+
         while not done:
+            # Render the game
             env.render()
+
+            # Get user input
             cmd = input(
-                f"Action [0–{len(SIMPLE_MOVEMENT)-1}] or 'q': ").strip()
+                f"Step {step_count} | Total Reward: {total_reward:.1f} | Action [0-{env.action_space.n-1}], 'r' to reset, or 'q' to quit: ").strip()
+
             if cmd.lower() == 'q':
+                print("Quitting...")
                 break
-            # validate
-            try:
-                act = int(cmd)
-                if not 0 <= act < len(SIMPLE_MOVEMENT):
-                    raise ValueError
-            except ValueError:
-                print("  ❌ Invalid index; please try again.")
+            elif cmd.lower() == 'r':
+                print("Resetting environment...")
+                result = env.reset()
+                if isinstance(result, tuple):
+                    state = result[0]
+                else:
+                    state = result
+                done = False
+                step_count = 0
+                total_reward = 0
                 continue
 
-            state, reward, done, info = env.step(act)
-            print(f"  ▶ Reward: {reward:.1f}   Done: {done}")
+            # Validate action input
+            try:
+                action = int(cmd)
+                if not 0 <= action < env.action_space.n:
+                    raise ValueError(
+                        f"Action must be between 0 and {env.action_space.n-1}")
+            except ValueError as e:
+                print(f"  ❌ Invalid input: {e}")
+                continue
+
+            # Take the action
+            try:
+                result = env.step(action)
+
+                # Handle both old and new gym API returns
+                if len(result) == 4:
+                    next_state, reward, done, info = result
+                    truncated = False
+                else:  # len(result) == 5, new gym API
+                    next_state, reward, terminated, truncated, info = result
+                    done = terminated or truncated
+
+                state = next_state
+                total_reward += reward
+                step_count += 1
+
+                action_name = env.unwrapped.get_action_meanings()[action]
+                print(
+                    f"  ▶ Action: {action_name} | Reward: {reward:.1f} | Done: {done}")
+
+                # Print some game info if available
+                if hasattr(env.unwrapped, 'ale') and hasattr(env.unwrapped.ale, 'lives'):
+                    lives = env.unwrapped.ale.lives()
+                    print(f"    Lives: {lives}")
+
+            except Exception as e:
+                print(f"  ❌ Error taking action: {e}")
+                continue
+
+    except KeyboardInterrupt:
+        print("\n\nInterrupted by user (Ctrl+C)")
+    except Exception as e:
+        print(f"❌ Unexpected error during gameplay: {e}")
     finally:
+        try:
+            env.close()
+            print("Environment closed. Goodbye! 👋")
+        except:
+            pass
+
+
+def test_environment_only():
+    """
+    Just test if the environment can be created and reset without manual input.
+    """
+    print("Testing environment creation...")
+
+    try:
+        env = gym.make("ALE/Tetris-v5", render_mode="rgb_array")
+
+        print("✅ Environment created successfully!")
+        print(f"Observation space: {env.observation_space}")
+        print(f"Action space: {env.action_space}")
+        print(f"Action meanings: {env.unwrapped.get_action_meanings()}")
+
+        # Test reset
+        result = env.reset()
+        if isinstance(result, tuple):
+            state = result[0]
+        else:
+            state = result
+        print(f"✅ Environment reset successful! State shape: {state.shape}")
+
+        # Test a few random actions
+        print("Testing random actions...")
+        for i in range(5):
+            action = env.action_space.sample()
+            result = env.step(action)
+
+            if len(result) == 4:
+                next_state, reward, done, info = result
+            else:
+                next_state, reward, terminated, truncated, info = result
+                done = terminated or truncated
+
+            action_name = env.unwrapped.get_action_meanings()[action]
+            print(
+                f"  Step {i+1}: Action {action} ({action_name}), Reward {reward:.1f}, Done {done}")
+
+            if done:
+                result = env.reset()
+                if isinstance(result, tuple):
+                    state = result[0]
+                else:
+                    state = result
+                print("  Environment reset after done=True")
+                break
+
         env.close()
-        print("Environment closed. Goodbye!")
+        print("✅ Environment test completed successfully!")
+        return True
+
+    except Exception as e:
+        print(f"❌ Environment test failed: {e}")
+        return False
 
 
 if __name__ == "__main__":
-    manual_play()
+    print("Tetris AI Manual Test")
+    print("=" * 40)
+
+    # First test if environment works at all
+    if test_environment_only():
+        print("\nEnvironment test passed! Starting manual play...")
+        print("=" * 40)
+        manual_play()
+    else:
+        print("\nEnvironment test failed. Please check your installation:")
+        print("1. pip install gym-tetris nes-py")
+        print("2. Make sure you have the ROM file in the right place")
+        print("3. Try running: python -c 'import gym_tetris; print(\"Import successful\")'")
