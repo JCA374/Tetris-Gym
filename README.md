@@ -1,162 +1,259 @@
-Here’s a minimal, modular layout that keeps things clear and lets each file hold a single responsibility:
+# Tetris AI with Deep Reinforcement Learning
+
+A modular Deep Q-Network (DQN) implementation for training AI agents to play Tetris using the modern **Tetris Gymnasium** environment.
+
+## 🎯 Features
+
+- **Modern Environment**: Uses [Tetris Gymnasium](https://github.com/Max-We/Tetris-Gymnasium) - the most up-to-date Tetris RL environment
+- **Flexible Architecture**: Supports both standard DQN and Dueling DQN
+- **Comprehensive Logging**: Detailed training metrics, plots, and TensorBoard support
+- **Easy Evaluation**: Built-in evaluation scripts with video recording
+- **Modular Design**: Clean, extensible codebase for research and experimentation
+
+## 🚀 Quick Start
+
+### Installation
+
+1. **Clone the repository**
+   ```bash
+   git clone <your-repo-url>
+   cd tetris_ai
+   ```
+
+2. **Install dependencies**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. **Test the setup**
+   ```bash
+   python test_setup.py
+   ```
+
+### Training
+
+```bash
+# Basic training
+python train.py
+
+# Advanced training with custom parameters
+python train.py --episodes 1000 --lr 0.0001 --model_type dueling_dqn --experiment_name "my_experiment"
+```
+
+### Evaluation
+
+```bash
+# Evaluate trained model
+python evaluate.py --episodes 10 --render
+
+# Detailed evaluation with video recording
+python evaluate.py --episodes 20 --render --save_video --detailed
+```
+
+## 📁 Project Structure
 
 ```
 tetris_ai/
-├── README.md
-├── requirements.txt
-├── .gitignore
-├── config.py            # global hyper-parameters & paths
-├── train.py             # entry-point: training loop
-├── evaluate.py          # entry-point: evaluation loop
+├── README.md                 # This file
+├── requirements.txt          # Python dependencies
+├── .gitignore               # Git ignore rules
+├── config.py                # Environment configuration & hyperparameters
+├── train.py                 # Training script
+├── evaluate.py              # Evaluation script
+├── test_setup.py           # Comprehensive test script
 │
-├── src/                 # all your library code lives here
+├── src/                     # Core library code
 │   ├── __init__.py
-│   ├── env.py           # wraps Gym/Tetris environment
-│   ├── model.py         # defines your neural-net architecture
-│   ├── agent.py         # agent class: select_action, remember, learn
-│   └── utils.py         # logging, checkpoint save/load, plotting
+│   ├── model.py            # Neural network architectures (DQN, Dueling DQN)
+│   ├── agent.py            # RL agent implementation
+│   ├── env.py              # Environment wrapper (simplified)
+│   └── utils.py            # Utilities (logging, plotting, benchmarking)
 │
-├── models/              # saved weights/checkpoints
-└── logs/                # TensorBoard logs or plain .csv/.txt histories
+├── models/                  # Saved model checkpoints (created during training)
+├── logs/                   # Training logs and plots (created during training)
+└── HW.txt                  # Hardware specifications
 ```
 
-**File breakdown**
+## 🔧 Configuration
 
-* **README.md**
-  High-level project overview and quickstart (how to set up venv, install, run `train.py`, etc.).
+Key settings in `config.py`:
 
-* **requirements.txt**
-  Pin your dependencies (e.g. `tensorflow`, `torch`, `gym-tetris`, `nes-py`, `numpy`, …).
+```python
+# Environment
+ENV_NAME = "tetris_gymnasium/Tetris"
 
-* **.gitignore**
-  Ignore `venv/`, `__pycache__/`, `models/`, `logs/`, etc.
+# Training hyperparameters
+LR = 1e-4                    # Learning rate
+GAMMA = 0.99                 # Discount factor
+BATCH_SIZE = 32              # Batch size
+MAX_EPISODES = 500           # Default training episodes
 
-* **config.py**
+# Directories
+MODEL_DIR = "models/"        # Model checkpoints
+LOG_DIR = "logs/"           # Training logs
+```
 
-  ```python
-  # Example
-  ENV_NAME     = "ALE/Tetris-v5"
-  LR           = 1e-4
-  GAMMA        = 0.99
-  BATCH_SIZE   = 32
-  MAX_EPISODES = 500
-  MODEL_DIR    = "models/"
-  LOG_DIR      = "logs/"
-  ```
+## 🎮 Environment Details
 
-  Centralize hyper-parameters, folder names, random seeds, etc.
+This project uses **Tetris Gymnasium**, which offers:
 
-* **train.py**
+- **Modern API**: Built on Gymnasium (successor to OpenAI Gym)
+- **Customizable**: Adjustable board size, gravity, reward functions
+- **Feature-rich**: Comprehensive game statistics and info
+- **Performance**: Both standard and JAX-based implementations
+- **Documentation**: Excellent docs and examples
 
-  ```python
-  from config import *
-  from src.env   import make_env
-  from src.agent import Agent
+### Environment Configuration
 
-  def main():
-      env = make_env(ENV_NAME)
-      agent = Agent(env.observation_space, env.action_space)
-      for ep in range(MAX_EPISODES):
-          state = env.reset()
-          done = False
-          while not done:
-              action = agent.select_action(state)
-              next_state, reward, done, _ = env.step(action)
-              agent.remember(state, action, reward, next_state, done)
-              agent.learn()
-              state = next_state
-          agent.save_checkpoint(ep)
-  if __name__ == "__main__":
-      main()
-  ```
+You can customize the Tetris environment:
 
-* **evaluate.py**
+```python
+# Different board sizes
+env = make_env("tetris_gymnasium/Tetris", 
+               board_height=15, board_width=8)
 
-  ```python
-  from config import *
-  from src.env   import make_env
-  from src.agent import Agent
+# Different preprocessing
+env = make_env("tetris_gymnasium/Tetris", 
+               preprocess=True, frame_stack=4)
+```
 
-  def main():
-      env   = make_env(ENV_NAME)
-      agent = Agent(env.observation_space, env.action_space)
-      agent.load_checkpoint(latest=True)
-      for _ in range(10):
-          state, done = env.reset(), False
-          total_reward = 0
-          while not done:
-              action = agent.select_action(state, eval_mode=True)
-              state, reward, done, _ = env.step(action)
-              total_reward += reward
-          print("Episode reward:", total_reward)
-  if __name__ == "__main__":
-      main()
-  ```
+## 🧠 Model Architectures
 
-* **src/env.py**
+### Standard DQN
+- Convolutional layers for image processing
+- Fully connected layers for decision making
+- Experience replay and target networks
 
-  ```python
-  import gym
-  import gym_tetris
-  import nes_py
+### Dueling DQN
+- Separate value and advantage streams
+- Better value estimation for states
+- Improved performance on Tetris
 
-  def make_env(name):
-      env = gym.make(name)
-      # apply wrappers: resize, grayscale, frame-stack, etc.
-      return env
-  ```
+## 📊 Training Features
 
-* **src/model.py**
+### Automatic Logging
+- Episode rewards and statistics
+- Training plots and progress visualization
+- Model checkpoints and best model saving
+- CSV logs for detailed analysis
 
-  ```python
-  import torch.nn as nn
+### Monitoring
+- Real-time training progress
+- Periodic evaluation during training
+- Performance metrics and benchmarking
+- Optional TensorBoard integration
 
-  class DQN(nn.Module):
-      def __init__(self, obs_space, action_space):
-          super().__init__()
-          # define conv layers, FC layers...
-      def forward(self, x):
-          # return Q-values
-  ```
+### Resumable Training
+```bash
+# Resume from latest checkpoint
+python train.py --resume
 
-* **src/agent.py**
+# Custom model path
+python evaluate.py --model_path models/best_model.pth
+```
 
-  ```python
-  import random
-  from collections import deque
+## 🎯 Training Tips
 
-  class Agent:
-      def __init__(self, obs_space, action_space):
-          # init nets, optimizer, replay buffer...
-      def select_action(self, state, eval_mode=False):
-          # ε-greedy or deterministic
-      def remember(self, *transition):
-          # push to replay buffer
-      def learn(self):
-          # sample batch, compute loss, backprop
-      def save_checkpoint(self, episode):
-          # torch.save(...)
-      def load_checkpoint(self, latest=False, path=None):
-          # load weights
-  ```
+### Quick Testing (Fast feedback)
+```bash
+python train.py --episodes 100 --log_freq 5 --eval_freq 20
+```
 
-* **src/utils.py**
+### Production Training (Best results)
+```bash
+python train.py --episodes 2000 --model_type dueling_dqn --lr 0.0001
+```
 
-  ```python
-  import os
-  def make_dir(path):
-      os.makedirs(path, exist_ok=True)
+### Custom Environment (Easier learning)
+Modify `config.py` to use smaller board:
+```python
+def make_env(...):
+    env = gym.make("tetris_gymnasium/Tetris", 
+                   board_height=10, board_width=6)  # Smaller board
+```
 
-  def plot_rewards(reward_list, save_path):
-      # simple matplotlib plot and save
-  ```
+## 📈 Results and Analysis
 
-* **models/**
-  Will hold your `.pth`/`.pt` or TensorFlow checkpoints.
+Training outputs are saved to:
+- `logs/<experiment_name>/` - Training logs and plots
+- `models/` - Model checkpoints
+- `models/evaluation_results/` - Evaluation summaries
 
-* **logs/**
-  For TensorBoard event files or your own CSV logs of reward vs. episode.
+View training progress:
+```bash
+# Generate plots from logs
+python -c "from src.utils import TrainingLogger; logger = TrainingLogger('logs', 'your_experiment'); logger.plot_progress()"
+```
+
+## 🔍 Troubleshooting
+
+### Common Issues
+
+1. **Import errors**: Ensure all dependencies are installed
+   ```bash
+   pip install tetris-gymnasium gymnasium torch numpy
+   ```
+
+2. **CUDA issues**: Check PyTorch CUDA compatibility
+   ```bash
+   python -c "import torch; print(torch.cuda.is_available())"
+   ```
+
+3. **Environment errors**: Run the test script
+   ```bash
+   python test_setup.py
+   ```
+
+### Performance Optimization
+
+- Use `render_mode=None` for training (faster)
+- Reduce board size for quicker convergence
+- Use GPU if available (automatic detection)
+- Adjust `batch_size` based on your hardware
+
+## 🔬 Research and Extensions
+
+This codebase is designed for research and experimentation:
+
+### Easy Modifications
+- **New reward functions**: Modify the environment wrapper
+- **Different architectures**: Add models to `src/model.py`
+- **Alternative algorithms**: Extend `src/agent.py`
+- **Custom environments**: Use different Tetris configurations
+
+### Advanced Features
+- **Multi-agent training**: Train multiple agents simultaneously
+- **Hyperparameter tuning**: Use the modular config system
+- **Transfer learning**: Load pre-trained models
+- **Custom metrics**: Add domain-specific evaluation metrics
+
+## 📚 References
+
+- [Tetris Gymnasium Paper](https://easychair.org/publications/preprint/5sXq): "Piece by Piece: Assembling a Modular Reinforcement Learning Environment for Tetris"
+- [Tetris Gymnasium GitHub](https://github.com/Max-We/Tetris-Gymnasium)
+- [DQN Paper](https://arxiv.org/abs/1312.5602): "Playing Atari with Deep Reinforcement Learning"
+- [Dueling DQN Paper](https://arxiv.org/abs/1511.06581): "Dueling Network Architectures for Deep Reinforcement Learning"
+
+## 📄 License
+
+This project is licensed under the MIT License. See the original Tetris Gymnasium repository for additional licensing information.
+
+## 🤝 Contributing
+
+Contributions are welcome! Areas for improvement:
+- New model architectures
+- Better reward shaping
+- Performance optimizations
+- Additional evaluation metrics
+- Documentation improvements
+
+## 🎖️ Acknowledgments
+
+- **Tetris Gymnasium**: Modern, modular Tetris environment
+- **Gymnasium**: Standard RL environment API
+- **PyTorch**: Deep learning framework
+- **OpenAI**: Original Gym framework inspiration
 
 ---
 
-This structure keeps each concern isolated, makes it easy to find and test pieces independently, and is straightforward to extend when you add things like prioritized replay, different agents, or more advanced logging.
+**Happy training! 🎮🤖**

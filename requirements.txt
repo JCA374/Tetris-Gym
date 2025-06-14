@@ -3,10 +3,9 @@ torch>=1.12.0
 numpy>=1.21.0
 matplotlib>=3.5.0
 
-# Gym and Tetris environment
-gym>=0.21.0
-gym-tetris>=1.0.0
-nes-py>=8.2.0
+# Modern Gymnasium and Tetris environment
+gymnasium>=0.29.0
+tetris-gymnasium>=1.0.0
 
 # Additional utilities
 opencv-python>=4.5.0
@@ -16,3 +15,12 @@ tqdm>=4.62.0
 # Optional: for logging and visualization
 tensorboard>=2.8.0
 wandb>=0.12.0
+
+# Development and testing
+pytest>=7.0.0
+
+# Note: Removed old dependencies to avoid conflicts:
+# gym-tetris, nes-py, gym (replaced by gymnasium)
+
+# Optional: If you need ALE/Atari environments as backup:
+# ale-py>=0.8.0

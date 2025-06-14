@@ -1,5 +1,6 @@
 import gymnasium as gym
 import numpy as np
+import ale_py  # This import is REQUIRED to register ALE environments!
 
 
 def manual_play():
@@ -12,7 +13,6 @@ def manual_play():
     try:
         # Create Atari Tetris environment using modern Gymnasium
         # This automatically handles ROM licensing
-        import gymnasium as gym
         env = gym.make("ALE/Tetris-v5", render_mode="human")
 
         print("✅ Environment created successfully!")
@@ -141,7 +141,6 @@ def check_installation():
 
     try:
         # Test if ALE environments are available
-        import gymnasium as gym
         env_id = "ALE/Tetris-v5"
         print(f"Testing environment: {env_id}")
         env = gym.make(env_id, render_mode="rgb_array")
@@ -160,7 +159,6 @@ def test_environment_only():
     print("Testing environment creation...")
 
     try:
-        import gymnasium as gym
         env = gym.make("ALE/Tetris-v5", render_mode="rgb_array")
 
         print("✅ Environment created successfully!")
@@ -223,6 +221,6 @@ if __name__ == "__main__":
         manual_play()
     else:
         print("\nEnvironment test failed. Please check your installation:")
-        print("1. pip install gym-tetris nes-py")
-        print("2. Make sure you have the ROM file in the right place")
-        print("3. Try running: python -c 'import gym_tetris; print(\"Import successful\")'")
+        print("1. pip install ale-py")
+        print("2. pip install 'gymnasium[atari,accept-rom-license]'")
+        print("3. Try running: python -c 'import ale_py; import gymnasium'")
