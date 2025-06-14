@@ -1,0 +1,4 @@
+Device name	DESKTOP-APPKIAQ
+Processor	Intel(R) Core(TM) i7-8565U CPU @ 1.80GHz   1.99 GHz
+Installed RAM	32.0 GB (31.8 GB usable)
+System type	64-bit operating system, x64-based processor
