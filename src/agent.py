@@ -1,18 +1,5 @@
-# Modified src/agent.py - Integration with reward shaping
-"""
-Agent modifications to support reward shaping with comprehensive logging
-"""
-
-from config import make_env, ENV_NAME, LR, GAMMA, BATCH_SIZE, MAX_EPISODES, MODEL_DIR, LOG_DIR
-from src.agent import Agent
-from src.utils import TrainingLogger, print_system_info, benchmark_environment, make_dir
-from tqdm import tqdm
-from datetime import datetime
-import json
-import time
-import argparse
-import sys
 import random
+import sys
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -27,7 +14,7 @@ class Agent:
     def __init__(self, obs_space, action_space, lr=1e-4, gamma=0.99,
                  epsilon_start=1.0, epsilon_end=0.01, epsilon_decay=0.995,
                  memory_size=10000, batch_size=32, target_update=1000,
-                 model_type="dqn", reward_shaping="full", shaping_config=None):
+                 model_type="dqn", reward_shaping="none", shaping_config=None):
         """
         Enhanced DQN Agent with reward shaping support
         
@@ -70,7 +57,7 @@ class Agent:
         if reward_shaping != "none":
             # Import here to avoid circular import
             try:
-                from src.reward_shaping import create_reward_shaper
+                from .reward_shaping import create_reward_shaper
                 config = shaping_config or {}
                 self.reward_shaper = create_reward_shaper(
                     reward_shaping, **config)
@@ -182,22 +169,16 @@ class Agent:
         Args:
             original_reward: Store original reward for ablation studies
         """
-        # Apply reward shaping if enabled
-        shaped_reward = reward
-        shaping_metrics = None
-
+        # Apply reward shaping (may return float OR (float, metrics))
         if self.reward_shaper is not None and info is not None:
-            if hasattr(self.reward_shaper, 'calculate_reward'):
-                if len(self.reward_shaper.calculate_reward.__code__.co_varnames) > 5:
-                    # Full reward shaper with metrics
-                    shaped_reward, shaping_metrics = self.reward_shaper.calculate_reward(
-                        state, action, reward, done, info
-                    )
-                else:
-                    # Simple reward shaper
-                    shaped_reward = self.reward_shaper.calculate_reward(
-                        state, action, reward, done, info
-                    )
+            result = self.reward_shaper.calculate_reward(
+                state, action, reward, done, info)
+            if isinstance(result, tuple):
+                shaped_reward, shaping_metrics = result
+            else:
+                shaped_reward, shaping_metrics = result, None
+        else:
+            shaped_reward, shaping_metrics = reward, None
 
         # Store experience with shaped reward
         self.memory.append((state, action, shaped_reward, next_state, done))
@@ -457,7 +438,6 @@ class Agent:
             })
 
         return stats
-
 
 # Modified train.py - Integration with reward shaping
 """
