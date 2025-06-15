@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Training script for Tetris AI using Tetris Gymnasium
+Training script for Tetris AI using Tetris Gymnasium - FIXED JSON serialization
 """
 
 from src.utils import TrainingLogger, print_system_info, benchmark_environment, make_dir
@@ -18,6 +18,22 @@ from tqdm import tqdm
 
 # Add src to path for imports
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
+
+
+def convert_numpy_types(obj):
+    """Convert numpy types to native Python types for JSON serialization"""
+    if isinstance(obj, dict):
+        return {key: convert_numpy_types(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_numpy_types(item) for item in obj]
+    elif isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    else:
+        return obj
 
 
 def parse_args():
@@ -135,12 +151,13 @@ def train(args):
     experiment_name = args.experiment_name or f"tetris_train_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     logger = TrainingLogger(LOG_DIR, experiment_name)
 
-    # Save training configuration
+    # Save training configuration (with JSON serialization fix)
     config = {
         'args': vars(args),
         'model_type': args.model_type,
         'environment': ENV_NAME,
-        'benchmark_results': benchmark_results,
+        # Fix JSON serialization
+        'benchmark_results': convert_numpy_types(benchmark_results),
         'start_time': datetime.now().isoformat(),
     }
 

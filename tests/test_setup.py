@@ -13,7 +13,8 @@ import torch
 
 # Add src to path
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
-
+# Add parent directory to Python path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 def test_imports():
     """Test all required imports"""
