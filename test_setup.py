@@ -66,9 +66,19 @@ def test_environment():
 
     try:
         import gymnasium as gym
+        from gymnasium.envs.registration import register
+
+        # Register manually like our config does
+        try:
+            register(
+                id="TetrisTest-v0",
+                entry_point="tetris_gymnasium.envs.tetris:Tetris",
+            )
+        except gym.error.Error:
+            pass  # Already registered
 
         # Test basic environment creation
-        env = gym.make("tetris_gymnasium/Tetris", render_mode="rgb_array")
+        env = gym.make("TetrisTest-v0", render_mode="rgb_array")
         print("  ✅ Environment created successfully")
 
         # Test environment properties
@@ -126,10 +136,20 @@ def test_environment_configs():
 
     try:
         import gymnasium as gym
+        from gymnasium.envs.registration import register
+
+        # Register manually
+        try:
+            register(
+                id="TetrisTestConfig-v0",
+                entry_point="tetris_gymnasium.envs.tetris:Tetris",
+            )
+        except gym.error.Error:
+            pass
 
         # Test what parameters the environment actually accepts
         print("  Testing basic environment creation...")
-        env = gym.make("tetris_gymnasium/Tetris", render_mode="rgb_array")
+        env = gym.make("TetrisTestConfig-v0", render_mode="rgb_array")
         obs, info = env.reset()
 
         if isinstance(obs, dict):
@@ -143,7 +163,7 @@ def test_environment_configs():
         render_modes = ["rgb_array", "human"]
         for mode in render_modes:
             try:
-                env = gym.make("tetris_gymnasium/Tetris", render_mode=mode)
+                env = gym.make("TetrisTestConfig-v0", render_mode=mode)
                 obs, info = env.reset()
                 print(f"  ✅ Render mode '{mode}' works")
                 env.close()
@@ -419,10 +439,20 @@ def test_observation_pipeline():
 
     try:
         import gymnasium as gym
+        from gymnasium.envs.registration import register
         from config import make_env
 
+        # Register manually
+        try:
+            register(
+                id="TetrisTestPipeline-v0",
+                entry_point="tetris_gymnasium.envs.tetris:Tetris",
+            )
+        except gym.error.Error:
+            pass
+
         # Test raw environment
-        raw_env = gym.make("tetris_gymnasium/Tetris", render_mode="rgb_array")
+        raw_env = gym.make("TetrisTestPipeline-v0", render_mode="rgb_array")
         raw_obs, _ = raw_env.reset()
         print(f"  Raw observation type: {type(raw_obs)}")
         if isinstance(raw_obs, dict):
