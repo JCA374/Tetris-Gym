@@ -1,7 +1,24 @@
-# Hyperparameter configuration for Tetris AI
+# config.py - Working configuration for Tetris Gymnasium AI
+
+import gymnasium as gym
+from gymnasium.envs.registration import register
+import numpy as np
+import cv2
+from gymnasium.spaces import Box
+
+# Register the Tetris environment manually (since auto-registration doesn't work)
+try:
+    register(
+        id="TetrisManual-v0",
+        entry_point="tetris_gymnasium.envs.tetris:Tetris",
+    )
+    print("✅ Tetris environment registered successfully")
+except gym.error.Error:
+    # Already registered
+    pass
 
 # Environment settings
-ENV_NAME = "ALE/Tetris-v5"  # Atari Tetris environment
+ENV_NAME = "TetrisManual-v0"
 RENDER_MODE = None  # "human" for visualization, None for training
 FRAME_STACK = 4  # Number of frames to stack
 PREPROCESS = True  # Apply image preprocessing
@@ -40,3 +57,263 @@ DEVICE = "cuda"  # "cuda" or "cpu"
 
 # Random seed for reproducibility
 SEED = 42
+
+
+class TetrisObservationWrapper(gym.ObservationWrapper):
+    """
+    Wrapper to convert Tetris Gymnasium dict observations to flattened arrays
+    """
+
+    def __init__(self, env, use_rgb_rendering=False):
+        super().__init__(env)
+        self.use_rgb_rendering = use_rgb_rendering
+
+        if use_rgb_rendering:
+            # Use RGB rendering instead of dict observations
+            self.observation_space = Box(
+                low=0, high=255, shape=(240, 320, 3), dtype=np.uint8
+            )
+        else:
+            # Calculate total size of flattened dict observations
+            total_size = 0
+            sample_obs = env.observation_space.sample()
+
+            for key, space in env.observation_space.spaces.items():
+                total_size += np.prod(space.shape)
+
+            self.observation_space = Box(
+                low=0, high=255, shape=(total_size,), dtype=np.uint8
+            )
+
+        print(f"TetrisObservationWrapper: {self.observation_space}")
+
+    def observation(self, obs):
+        if self.use_rgb_rendering:
+            # Get RGB array from environment
+            rgb_array = self.env.render()
+            if rgb_array is not None:
+                return rgb_array
+            else:
+                # Fallback to zeros if render fails
+                return np.zeros(self.observation_space.shape, dtype=np.uint8)
+        else:
+            # Flatten all dict components
+            flattened = []
+            for key in sorted(obs.keys()):  # Sort for consistency
+                flattened.append(obs[key].flatten())
+
+            result = np.concatenate(flattened).astype(np.uint8)
+            return result
+
+
+class TetrisPreprocessWrapper(gym.ObservationWrapper):
+    """
+    Preprocessing wrapper for Tetris observations
+    """
+
+    def __init__(self, env, target_size=(84, 84), grayscale=True):
+        super().__init__(env)
+        self.target_size = target_size
+        self.grayscale = grayscale
+
+        if grayscale:
+            shape = (*target_size, 1)
+        else:
+            shape = (*target_size, 3)
+
+        self.observation_space = Box(
+            low=0, high=255, shape=shape, dtype=np.uint8
+        )
+
+    def observation(self, obs):
+        # Resize observation
+        if len(obs.shape) == 3:  # RGB image
+            resized = cv2.resize(obs, self.target_size)
+            if self.grayscale:
+                resized = cv2.cvtColor(resized, cv2.COLOR_RGB2GRAY)
+                resized = np.expand_dims(resized, axis=-1)
+        elif len(obs.shape) == 1:  # Flattened features
+            # For feature vectors, we'll create a 2D representation
+            side_length = int(np.sqrt(len(obs)))
+            if side_length * side_length != len(obs):
+                # Pad if necessary
+                padding = side_length * side_length - len(obs)
+                obs = np.pad(obs, (0, padding), mode='constant')
+
+            # Reshape to 2D
+            obs_2d = obs[:side_length *
+                         side_length].reshape(side_length, side_length)
+            resized = cv2.resize(obs_2d.astype(np.uint8), self.target_size)
+
+            if not self.grayscale:
+                resized = cv2.cvtColor(resized, cv2.COLOR_GRAY2RGB)
+            else:
+                resized = np.expand_dims(resized, axis=-1)
+        else:
+            resized = obs
+
+        return resized
+
+
+class FrameStackWrapper(gym.ObservationWrapper):
+    """
+    Stack multiple frames together
+    """
+
+    def __init__(self, env, num_frames=4):
+        super().__init__(env)
+        self.num_frames = num_frames
+        self.frames = []
+
+        # Update observation space
+        old_space = env.observation_space
+        new_shape = (*old_space.shape[:-1], old_space.shape[-1] * num_frames)
+        self.observation_space = Box(
+            low=old_space.low.min(),
+            high=old_space.high.max(),
+            shape=new_shape,
+            dtype=old_space.dtype
+        )
+
+    def observation(self, obs):
+        self.frames.append(obs)
+        if len(self.frames) > self.num_frames:
+            self.frames.pop(0)
+
+        # Pad with first frame if we don't have enough frames yet
+        while len(self.frames) < self.num_frames:
+            self.frames.insert(0, obs)
+
+        # Stack frames along last dimension
+        stacked = np.concatenate(self.frames, axis=-1)
+        return stacked
+
+    def reset(self, **kwargs):
+        obs, info = self.env.reset(**kwargs)
+        self.frames = []
+        return self.observation(obs), info
+
+
+def make_env(env_name=None, render_mode=None, preprocess=True, frame_stack=4,
+             use_rgb_rendering=False, **env_kwargs):
+    """
+    Create and wrap Tetris Gymnasium environment
+    
+    Args:
+        env_name: Environment name (default: ENV_NAME)
+        render_mode: Render mode for environment
+        preprocess: Whether to apply preprocessing
+        frame_stack: Number of frames to stack (0 to disable)
+        use_rgb_rendering: Use RGB rendering instead of dict observations
+        **env_kwargs: Additional environment arguments
+    
+    Returns:
+        Wrapped environment
+    """
+    if env_name is None:
+        env_name = ENV_NAME
+
+    print(f"Creating environment: {env_name}")
+
+    # Create base environment
+    env = gym.make(
+        env_name, render_mode=render_mode or "rgb_array", **env_kwargs)
+
+    # Apply observation wrapper to handle dict observations
+    env = TetrisObservationWrapper(env, use_rgb_rendering=use_rgb_rendering)
+
+    # Apply preprocessing if requested
+    if preprocess:
+        env = TetrisPreprocessWrapper(
+            env, target_size=(84, 84), grayscale=True)
+
+    # Apply frame stacking if requested
+    if frame_stack > 1:
+        env = FrameStackWrapper(env, num_frames=frame_stack)
+
+    print(f"Final observation space: {env.observation_space}")
+    print(f"Action space: {env.action_space}")
+
+    return env
+
+
+def test_environment(episodes=1, steps_per_episode=100):
+    """
+    Test environment creation and basic functionality
+    
+    Args:
+        episodes: Number of test episodes
+        steps_per_episode: Steps per episode
+    
+    Returns:
+        True if test successful, False otherwise
+    """
+    try:
+        print("Testing Tetris Gymnasium environment...")
+
+        # Test basic environment
+        env = make_env(render_mode="rgb_array")
+
+        for episode in range(episodes):
+            obs, info = env.reset(seed=42)
+            total_reward = 0
+
+            print(f"Episode {episode + 1}:")
+            print(f"  Initial observation shape: {obs.shape}")
+            print(f"  Action space: {env.action_space}")
+
+            for step in range(steps_per_episode):
+                action = env.action_space.sample()
+                obs, reward, terminated, truncated, info = env.step(action)
+                total_reward += reward
+
+                if terminated or truncated:
+                    print(f"  Episode ended at step {step + 1}")
+                    break
+
+            print(f"  Total reward: {total_reward}")
+            print(f"  Final observation shape: {obs.shape}")
+
+        env.close()
+        print("✅ Environment test completed successfully!")
+        return True
+
+    except Exception as e:
+        print(f"❌ Environment test failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def test_different_configs():
+    """Test different environment configurations"""
+    print("\nTesting different configurations...")
+
+    configs = [
+        {"name": "Default", "kwargs": {}},
+        {"name": "No preprocessing", "kwargs": {"preprocess": False}},
+        {"name": "No frame stack", "kwargs": {"frame_stack": 1}},
+        {"name": "RGB rendering", "kwargs": {"use_rgb_rendering": True}},
+    ]
+
+    for config in configs:
+        try:
+            print(f"\n  Testing: {config['name']}")
+            env = make_env(**config['kwargs'])
+            obs, info = env.reset()
+            print(f"    Observation shape: {obs.shape}")
+            env.close()
+            print(f"    ✅ {config['name']} works")
+        except Exception as e:
+            print(f"    ❌ {config['name']} failed: {e}")
+
+
+if __name__ == "__main__":
+    # Test the environment creation
+    success = test_environment()
+
+    if success:
+        test_different_configs()
+        print("\n🎉 All environment tests passed!")
+    else:
+        print("\n❌ Environment tests failed!")

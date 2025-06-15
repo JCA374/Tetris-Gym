@@ -5,7 +5,7 @@ matplotlib>=3.5.0
 
 # Modern Gymnasium and Tetris environment
 gymnasium>=0.29.0
-tetris-gymnasium>=1.0.0
+tetris-gymnasium==0.2.1
 
 # Additional utilities
 opencv-python>=4.5.0

@@ -5,14 +5,15 @@ import torch.optim as optim
 import numpy as np
 from collections import deque
 import os
-from src.model import DQN
+from src.model import create_model
 from src.utils import make_dir
 
 
 class Agent:
     def __init__(self, obs_space, action_space, lr=1e-4, gamma=0.99,
                  epsilon_start=1.0, epsilon_end=0.01, epsilon_decay=0.995,
-                 memory_size=10000, batch_size=32, target_update=1000):
+                 memory_size=10000, batch_size=32, target_update=1000,
+                 model_type="dqn"):
         """
         DQN Agent optimized for Tetris Gymnasium
         
@@ -27,6 +28,7 @@ class Agent:
             memory_size: Replay buffer size
             batch_size: Batch size for training
             target_update: Steps between target network updates
+            model_type: "dqn" or "dueling_dqn"
         """
         self.device = torch.device(
             "cuda" if torch.cuda.is_available() else "cpu")
@@ -46,8 +48,10 @@ class Agent:
         self.target_update = target_update
 
         # Networks
-        self.q_network = DQN(obs_space, action_space).to(self.device)
-        self.target_network = DQN(obs_space, action_space).to(self.device)
+        self.q_network = create_model(
+            obs_space, action_space, model_type).to(self.device)
+        self.target_network = create_model(
+            obs_space, action_space, model_type).to(self.device)
         self.optimizer = optim.Adam(self.q_network.parameters(), lr=lr)
 
         # Initialize target network
@@ -197,13 +201,15 @@ class Agent:
             if state.max() > 1.0:
                 state = state / 255.0
 
-            # Add batch dimension if needed
+            # Handle different input shapes
             if len(state.shape) == 3:  # (H, W, C)
                 state = state.transpose(2, 0, 1)  # (C, H, W)
                 state = np.expand_dims(state, axis=0)  # (1, C, H, W)
             elif len(state.shape) == 2:  # (H, W)
                 state = np.expand_dims(state, axis=0)  # (1, H, W)
                 state = np.expand_dims(state, axis=0)  # (1, 1, H, W)
+            elif len(state.shape) == 1:  # Feature vector
+                state = np.expand_dims(state, axis=0)  # (1, features)
 
             return torch.tensor(state, device=self.device, dtype=torch.float)
         else:
