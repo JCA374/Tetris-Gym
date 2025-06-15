@@ -36,7 +36,7 @@ EPSILON_DECAY = 100000  # Decay steps for epsilon
 TARGET_UPDATE_FREQ = 1000  # Steps between target network updates
 
 # Training settings
-MAX_EPISODES = 1000  # Maximum number of episodes
+MAX_EPISODES = 10000  # Maximum number of episodes
 MAX_STEPS_PER_EPISODE = 10000  # Maximum steps per episode
 SAVE_FREQUENCY = 50  # Save model every N episodes
 LOG_FREQUENCY = 10  # Log metrics every N episodes
