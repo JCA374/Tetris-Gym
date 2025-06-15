@@ -209,3 +209,5 @@ $RECYCLE.BIN/
 
 # Custom project ignores
 # Add any project-specific files to ignore here
+
+archive/

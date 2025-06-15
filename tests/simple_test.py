@@ -3,6 +3,12 @@
 Simple test to verify the working Tetris setup
 """
 
+import sys
+import os
+
+# Add parent directory to Python path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 
 def test_working_setup():
     """Test that everything is working"""

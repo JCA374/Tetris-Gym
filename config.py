@@ -1,4 +1,4 @@
-# config.py - Working configuration for Tetris Gymnasium AI
+# config.py - Fixed configuration for Tetris Gymnasium AI
 
 import gymnasium as gym
 from gymnasium.envs.registration import register
@@ -61,7 +61,7 @@ SEED = 42
 
 class TetrisObservationWrapper(gym.ObservationWrapper):
     """
-    Wrapper to convert Tetris Gymnasium dict observations to flattened arrays
+    Wrapper to convert Tetris Gymnasium dict observations to arrays
     """
 
     def __init__(self, env, use_rgb_rendering=False):
@@ -75,14 +75,29 @@ class TetrisObservationWrapper(gym.ObservationWrapper):
             )
         else:
             # Calculate total size of flattened dict observations
-            total_size = 0
+            # Get a sample to understand the structure
             sample_obs = env.observation_space.sample()
+            print(f"Sample observation keys: {list(sample_obs.keys())}")
 
-            for key, space in env.observation_space.spaces.items():
-                total_size += np.prod(space.shape)
+            total_size = 0
+            self.obs_info = {}
+
+            for key, value in sample_obs.items():
+                if isinstance(value, np.ndarray):
+                    size = np.prod(value.shape)
+                    total_size += size
+                    self.obs_info[key] = {'shape': value.shape, 'size': size}
+                    print(f"  {key}: shape={value.shape}, size={size}")
+                else:
+                    # Handle scalar values
+                    total_size += 1
+                    self.obs_info[key] = {'shape': (), 'size': 1}
+                    print(f"  {key}: scalar value")
+
+            print(f"Total flattened size: {total_size}")
 
             self.observation_space = Box(
-                low=0, high=255, shape=(total_size,), dtype=np.uint8
+                low=0, high=1, shape=(total_size,), dtype=np.float32
             )
 
         print(f"TetrisObservationWrapper: {self.observation_space}")
@@ -99,10 +114,24 @@ class TetrisObservationWrapper(gym.ObservationWrapper):
         else:
             # Flatten all dict components
             flattened = []
-            for key in sorted(obs.keys()):  # Sort for consistency
-                flattened.append(obs[key].flatten())
 
-            result = np.concatenate(flattened).astype(np.uint8)
+            for key in sorted(obs.keys()):  # Sort for consistency
+                value = obs[key]
+                if isinstance(value, np.ndarray):
+                    # Normalize arrays to [0, 1] range
+                    if value.dtype in [np.uint8, np.int32, np.int64]:
+                        value = value.astype(np.float32)
+                        if value.max() > 1:
+                            value = value / 255.0 if value.max() <= 255 else value / value.max()
+                    flattened.append(value.flatten())
+                else:
+                    # Handle scalar values
+                    scalar_val = float(value)
+                    if scalar_val > 1:
+                        scalar_val = scalar_val / 255.0 if scalar_val <= 255 else scalar_val / 1000.0
+                    flattened.append(np.array([scalar_val]))
+
+            result = np.concatenate(flattened).astype(np.float32)
             return result
 
 
@@ -122,34 +151,50 @@ class TetrisPreprocessWrapper(gym.ObservationWrapper):
             shape = (*target_size, 3)
 
         self.observation_space = Box(
-            low=0, high=255, shape=shape, dtype=np.uint8
+            low=0, high=1, shape=shape, dtype=np.float32
         )
 
     def observation(self, obs):
-        # Resize observation
+        # Handle different observation types
         if len(obs.shape) == 3:  # RGB image
             resized = cv2.resize(obs, self.target_size)
             if self.grayscale:
                 resized = cv2.cvtColor(resized, cv2.COLOR_RGB2GRAY)
                 resized = np.expand_dims(resized, axis=-1)
         elif len(obs.shape) == 1:  # Flattened features
-            # For feature vectors, we'll create a 2D representation
-            side_length = int(np.sqrt(len(obs)))
-            if side_length * side_length != len(obs):
-                # Pad if necessary
-                padding = side_length * side_length - len(obs)
-                obs = np.pad(obs, (0, padding), mode='constant')
+            # For feature vectors, create a square 2D representation
+            obs_len = len(obs)
+
+            # Find the best square size
+            side_length = int(np.ceil(np.sqrt(obs_len)))
+            target_len = side_length * side_length
+
+            # Pad to make it square (with zeros, not negative padding)
+            if obs_len < target_len:
+                padding_needed = target_len - obs_len
+                obs_padded = np.pad(obs, (0, padding_needed),
+                                    mode='constant', constant_values=0)
+            else:
+                obs_padded = obs[:target_len]  # Truncate if too long
 
             # Reshape to 2D
-            obs_2d = obs[:side_length *
-                         side_length].reshape(side_length, side_length)
-            resized = cv2.resize(obs_2d.astype(np.uint8), self.target_size)
+            obs_2d = obs_padded.reshape(side_length, side_length)
+
+            # Ensure values are in proper range for cv2
+            obs_2d = np.clip(obs_2d * 255, 0, 255).astype(np.uint8)
+
+            # Resize to target size
+            resized = cv2.resize(obs_2d, self.target_size)
+
+            # Convert back to float and normalize
+            resized = resized.astype(np.float32) / 255.0
 
             if not self.grayscale:
                 resized = cv2.cvtColor(resized, cv2.COLOR_GRAY2RGB)
             else:
                 resized = np.expand_dims(resized, axis=-1)
         else:
+            # For other shapes, just return as is
             resized = obs
 
         return resized
@@ -260,6 +305,7 @@ def test_environment(episodes=1, steps_per_episode=100):
 
             print(f"Episode {episode + 1}:")
             print(f"  Initial observation shape: {obs.shape}")
+            print(f"  Observation range: [{obs.min():.3f}, {obs.max():.3f}]")
             print(f"  Action space: {env.action_space}")
 
             for step in range(steps_per_episode):
@@ -302,6 +348,8 @@ def test_different_configs():
             env = make_env(**config['kwargs'])
             obs, info = env.reset()
             print(f"    Observation shape: {obs.shape}")
+            print(f"    Observation dtype: {obs.dtype}")
+            print(f"    Observation range: [{obs.min():.3f}, {obs.max():.3f}]")
             env.close()
             print(f"    ✅ {config['name']} works")
         except Exception as e:
