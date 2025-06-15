@@ -170,7 +170,7 @@ class Agent:
             path = os.path.join(model_dir, 'latest_checkpoint.pth')
 
         if path and os.path.exists(path):
-            checkpoint = torch.load(path, map_location=self.device)
+            checkpoint = torch.load(path, map_location=self.device, weights_only=False)
 
             self.q_network.load_state_dict(checkpoint['q_network_state_dict'])
             self.target_network.load_state_dict(

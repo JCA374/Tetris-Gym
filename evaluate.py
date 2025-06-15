@@ -39,82 +39,88 @@ def parse_args():
 
 
 def evaluate_model(agent, env, args):
-    """Evaluate the model"""
-    print(f"Evaluating model for {args.episodes} episodes...")
+    """
+    Run evaluation for a given agent and environment.
+
+    Returns:
+      episode_rewards: List[float]
+      episode_steps:   List[int]
+      episode_times:   List[float]
+      game_info:       List[Dict[str, Any]]
+    """
+    import time
+    import numpy as np
+
+    print(f"Evaluating model for {args.episodes} episodes.")
     print("=" * 60)
 
-    agent.q_network.eval()  # Set to evaluation mode
+    # Switch to eval mode
+    agent.q_network.eval()
 
     episode_rewards = []
     episode_steps = []
     episode_times = []
     game_info = []
 
-    for episode in range(args.episodes):
-        obs, info = env.reset()
-        episode_reward = 0
-        episode_step_count = 0
-        episode_start_time = time.time()
+    # If rendering, spin up a raw env purely for display and reset it
+    render_env = None
+    if args.render:
+        import gymnasium as gym
+        render_env = gym.make(env.spec.id, render_mode="human")
+        render_env.reset()  # <— ensure reset before first render
 
+    for ep in range(args.episodes):
+        obs, info = env.reset()
         done = False
-        step_rewards = []
+        total_reward = 0.0
+        steps = 0
+        start_time = time.time()
 
         while not done:
-            # Select action (no exploration)
+            # Select action (greedy evaluation)
             action = agent.select_action(obs, eval_mode=True)
 
-            # Take step
+            # Step the wrapped env for stats
             obs, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
 
-            episode_reward += reward
-            episode_step_count += 1
-            step_rewards.append(reward)
+            total_reward += reward
+            steps += 1
 
-            # Render if requested
+            # Render from the raw env
             if args.render:
-                env.render()
+                render_env.render()
                 if args.slow:
-                    time.sleep(0.1)  # Slow down for human viewing
+                    time.sleep(0.1)
 
-        episode_time = time.time() - episode_start_time
+        duration = time.time() - start_time
 
-        # Store episode data
-        episode_rewards.append(episode_reward)
-        episode_steps.append(episode_step_count)
-        episode_times.append(episode_time)
+        # Record metrics
+        episode_rewards.append(total_reward)
+        episode_steps.append(steps)
+        episode_times.append(duration)
+        game_info.append({
+            "episode": ep + 1,
+            "reward": float(total_reward),
+            "steps": int(steps),
+            "time": float(duration),
+            "avg_reward_per_step": float(total_reward / steps) if steps > 0 else 0.0
+        })
 
-        # Extract game-specific info if available
-        episode_info = {
-            'episode': episode + 1,
-            'reward': episode_reward,
-            'steps': episode_step_count,
-            'time': episode_time,
-            'avg_reward_per_step': episode_reward / episode_step_count if episode_step_count > 0 else 0,
-        }
+        # Print per‐episode summary
+        print(f"Episode {ep+1:3d}: Reward: {total_reward:6.1f}, "
+              f"Steps: {steps:4d}, Time: {duration:5.2f}s, "
+              f"Avg/step: {duration/steps*1000:6.2f}ms")
 
-        # Add any environment-specific info
-        if hasattr(info, 'get'):
-            episode_info.update(
-                {k: v for k, v in info.items() if isinstance(v, (int, float))})
+    # Back to train mode
+    agent.q_network.train()
 
-        game_info.append(episode_info)
-
-        # Print episode results
-        if args.detailed or episode < 5:  # Always show first 5 episodes
-            print(f"Episode {episode+1:2d}: "
-                  f"Reward: {episode_reward:7.1f}, "
-                  f"Steps: {episode_step_count:4d}, "
-                  f"Time: {episode_time:5.1f}s, "
-                  f"Avg/step: {episode_reward/episode_step_count:6.2f}")
-        elif episode % 10 == 9:  # Show progress every 10 episodes
-            avg_reward = np.mean(episode_rewards[-10:])
-            print(
-                f"Episodes {episode-8:2d}-{episode+1:2d}: Avg reward = {avg_reward:7.1f}")
-
-    agent.q_network.train()  # Set back to training mode
+    # Clean up render‐only env
+    if render_env:
+        render_env.close()
 
     return episode_rewards, episode_steps, episode_times, game_info
+
 
 
 def print_statistics(episode_rewards, episode_steps, episode_times):
@@ -170,6 +176,14 @@ def save_results(episode_rewards, episode_steps, episode_times, game_info, args)
 
     import json
     from datetime import datetime
+
+    # Prepare results data
+    # Sanitize any NumPy scalars in game_info so json.dump won’t barf
+    import numpy as np
+    for ep in game_info:
+        for k, v in ep.items():
+            if isinstance(v, np.generic):
+                ep[k] = v.item()
 
     # Prepare results data
     results = {
