@@ -328,7 +328,8 @@ class FrameStackWrapper(gym.ObservationWrapper):
         return stacked
 
     def reset(self, **kwargs):
-        obs, info = self.env.reset(**kwargs)
+        # Forward through the entire wrapper chain
+        obs, info = super().reset(**kwargs)
         self.frames = []
         return self.observation(obs), info
 

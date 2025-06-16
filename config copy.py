@@ -1,4 +1,4 @@
-# config.py - Fixed configuration for Tetris Gymnasium AI
+# config.py - Fixed configuration for Tetris Gymnasium AI with Board Wrapper
 
 import gymnasium as gym
 from gymnasium.envs.registration import register
@@ -22,24 +22,49 @@ ENV_NAME = "TetrisManual-v0"
 RENDER_MODE = None  # "human" for visualization, None for training
 FRAME_STACK = 4  # Number of frames to stack
 PREPROCESS = True  # Apply image preprocessing
-REWARD_SHAPING = True  # Apply custom reward shaping
 
-# Training hyperparameters
-LR = 1e-4  # Learning rate
+# Learning hyperparameters
+LR = 5e-4  # increased from 1e-4 for faster learning
 GAMMA = 0.99  # Discount factor
-BATCH_SIZE = 32  # Batch size for training
-REPLAY_BUFFER_SIZE = 100000  # Experience replay buffer size
-MIN_REPLAY_SIZE = 10000  # Minimum buffer size before training starts
-EPSILON_START = 1.0  # Initial exploration rate
-EPSILON_END = 0.1  # Final exploration rate
-EPSILON_DECAY = 200000  # Decay steps for epsilon
-TARGET_UPDATE_FREQ = 5000  # Steps between target network updates
+BATCH_SIZE = 64  # increased for more stable learning
+UPDATE_FREQUENCY = 4  # train every 4 steps
 
-# Training settings
-MAX_EPISODES = 10000  # Maximum number of episodes
-MAX_STEPS_PER_EPISODE = 10000  # Maximum steps per episode
-SAVE_FREQUENCY = 50  # Save model every N episodes
-LOG_FREQUENCY = 10  # Log metrics every N episodes
+# Exploration schedule
+EPSILON_START = 1.0  # Initial exploration rate
+EPSILON_END = 0.05  # higher floor to maintain exploration
+EPSILON_DECAY = 200_000  # slower decay over more episodes
+
+# Network updates
+TARGET_UPDATE_FREQ = 5_000  # less frequent for stability
+
+# Replay buffer
+REPLAY_BUFFER_SIZE = 100_000  # Experience replay buffer size
+MIN_REPLAY_SIZE = 1_000  # start training early
+
+# Reward shaping parameters
+REWARD_SHAPING = True
+HEIGHT_WEIGHT = -0.5  # reduced height penalty
+HOLE_WEIGHT = -1.0  # reduced hole penalty  
+LINE_CLEAR_BONUS = 10.0  # bonus for any line clear
+TETRIS_BONUS = 50.0  # big bonus for 4-line clear
+SURVIVAL_BONUS = 0.1  # per-step survival reward
+COMBO_MULTIPLIER = 1.5  # reward boost for consecutive clears
+
+# Environment settings (training)
+MAX_EPISODES = 10_000  # Maximum number of episodes
+MAX_EPISODE_STEPS = 10_000  # cap episodes to avoid infinite loops
+SAVE_FREQUENCY = 500  # Save model every N episodes
+LOG_FREQUENCY = 100  # Log metrics every N episodes
+EVAL_FREQUENCY = 1_000  # Evaluate every N episodes
+
+# Curriculum learning configuration
+CURRICULUM = True
+CURRICULUM_STEPS = [0, 500, 1500]
+BOARD_CONFIGS = [
+    {"board_height": 10, "board_width": 6},   # easy
+    {"board_height": 15, "board_width": 8},   # medium  
+    {"board_height": 20, "board_width": 10}   # full
+]
 
 # Model architecture
 CONV_CHANNELS = [32, 64, 64]  # Convolutional layer channels
@@ -81,18 +106,32 @@ class TetrisObservationWrapper(gym.ObservationWrapper):
 
             total_size = 0
             self.obs_info = {}
-
-            for key, value in sample_obs.items():
+            self.key_order = sorted(sample_obs.keys())  # Store key order
+            
+            # Calculate offsets for each key
+            offset = 0
+            for key in self.key_order:
+                value = sample_obs[key]
                 if isinstance(value, np.ndarray):
                     size = np.prod(value.shape)
-                    total_size += size
-                    self.obs_info[key] = {'shape': value.shape, 'size': size}
-                    print(f"  {key}: shape={value.shape}, size={size}")
+                    self.obs_info[key] = {
+                        'shape': value.shape, 
+                        'size': size,
+                        'offset': offset
+                    }
+                    print(f"  {key}: shape={value.shape}, size={size}, offset={offset}")
                 else:
                     # Handle scalar values
-                    total_size += 1
-                    self.obs_info[key] = {'shape': (), 'size': 1}
-                    print(f"  {key}: scalar value")
+                    size = 1
+                    self.obs_info[key] = {
+                        'shape': (), 
+                        'size': 1,
+                        'offset': offset
+                    }
+                    print(f"  {key}: scalar value, offset={offset}")
+                
+                total_size += size
+                offset += size
 
             print(f"Total flattened size: {total_size}")
 
@@ -112,10 +151,10 @@ class TetrisObservationWrapper(gym.ObservationWrapper):
                 # Fallback to zeros if render fails
                 return np.zeros(self.observation_space.shape, dtype=np.uint8)
         else:
-            # Flatten all dict components
+            # Flatten all dict components using stored key order
             flattened = []
 
-            for key in sorted(obs.keys()):  # Sort for consistency
+            for key in self.key_order:  # Use consistent order
                 value = obs[key]
                 if isinstance(value, np.ndarray):
                     # Normalize arrays to [0, 1] range
@@ -135,9 +174,118 @@ class TetrisObservationWrapper(gym.ObservationWrapper):
             return result
 
 
+class TetrisBoardWrapper(gym.ObservationWrapper):
+    """
+    Extracts the board from flattened observations using proper offset tracking,
+    reshapes to 2D, resizes with correct aspect, pads to square, normalizes.
+    """
+    def __init__(self, env, target_size=(84, 84), grayscale=True):
+        super().__init__(env)
+        self.target_size = target_size
+        self.grayscale = grayscale
+        shape = (*target_size, 1) if grayscale else (*target_size, 3)
+        self.observation_space = Box(0.0, 1.0, shape, dtype=np.float32)
+        
+        # Get board info from parent wrapper if available
+        self.board_offset = None
+        self.board_size = None
+        self.board_shape = (20, 10)  # Default Tetris dimensions
+        
+        # Try to get board info from parent TetrisObservationWrapper
+        if hasattr(env, 'obs_info') and 'board' in env.obs_info:
+            board_info = env.obs_info['board']
+            self.board_offset = board_info.get('offset', 0)
+            self.board_size = board_info.get('size', 200)
+            self.board_shape = board_info.get('shape', (20, 10))
+            print(f"TetrisBoardWrapper: Found board at offset {self.board_offset}, "
+                  f"size {self.board_size}, shape {self.board_shape}")
+        else:
+            print("TetrisBoardWrapper: No board info found, using defaults")
+
+    def observation(self, obs):
+        # If dict (RGB rendering) or image, pass through
+        if obs.ndim == 3:
+            # Already an image, just resize if needed
+            if obs.shape[:2] != self.target_size:
+                resized = cv2.resize(obs, self.target_size)
+                if self.grayscale and len(resized.shape) == 3:
+                    resized = cv2.cvtColor(resized, cv2.COLOR_RGB2GRAY)
+                    resized = np.expand_dims(resized, axis=-1)
+                return resized.astype(np.float32) / 255.0
+            return obs
+
+        # Flattened feature vector: extract board using proper offset
+        if obs.ndim == 1:
+            # Use discovered offset or fall back to assuming board is first
+            if self.board_offset is not None and self.board_size is not None:
+                if obs.size >= self.board_offset + self.board_size:
+                    board_flat = obs[self.board_offset:self.board_offset + self.board_size]
+                else:
+                    print(f"Warning: Observation too small for board extraction. "
+                          f"Expected {self.board_offset + self.board_size}, got {obs.size}")
+                    # Fallback to first elements
+                    board_flat = obs[:min(self.board_size, obs.size)]
+            else:
+                # Fallback: assume board is first 200 elements
+                board_flat = obs[:min(200, obs.size)]
+            
+            # Reshape to 2D board
+            try:
+                board = board_flat.reshape(self.board_shape)
+            except ValueError as e:
+                print(f"Warning: Could not reshape board. Shape mismatch: {e}")
+                # Create empty board as fallback
+                board = np.zeros(self.board_shape)
+            
+            # Normalize to [0, 1] if not already
+            if board.max() > 1.0:
+                board = board / board.max()
+            
+            # Scale up to tall rectangle to maintain aspect ratio
+            # Use INTER_NEAREST to keep sharp block boundaries
+            board_uint8 = np.clip(board * 255, 0, 255).astype(np.uint8)
+            
+            # Calculate resize dimensions to maintain aspect ratio
+            board_h, board_w = self.board_shape
+            aspect_ratio = board_h / board_w  # Should be 2.0 for standard Tetris
+            
+            # Target a height of 84 pixels, width proportional
+            target_h = self.target_size[0]
+            target_w = int(target_h / aspect_ratio)
+            
+            # Ensure it fits within the target size
+            if target_w > self.target_size[1]:
+                target_w = self.target_size[1]
+                target_h = int(target_w * aspect_ratio)
+            
+            board_resized = cv2.resize(board_uint8, (target_w, target_h), 
+                                      interpolation=cv2.INTER_NEAREST)
+            
+            # Calculate padding to center the board
+            pad_h = (self.target_size[0] - target_h) // 2
+            pad_w = (self.target_size[1] - target_w) // 2
+            
+            # Pad to make it target_size
+            padded = np.pad(board_resized, 
+                           ((pad_h, self.target_size[0] - target_h - pad_h),
+                            (pad_w, self.target_size[1] - target_w - pad_w)), 
+                           mode='constant', constant_values=0)
+            
+            # Convert back to float and normalize
+            img = padded.astype(np.float32) / 255.0
+            
+            # Add channel dimension
+            return img[..., None]  # (84, 84, 1)
+
+        # Fallback for unexpected inputs
+        print(f"Warning: TetrisBoardWrapper received unexpected input shape: {obs.shape}")
+        # Try to create a valid output
+        return np.zeros(self.observation_space.shape, dtype=np.float32)
+
+
 class TetrisPreprocessWrapper(gym.ObservationWrapper):
     """
-    Preprocessing wrapper for Tetris observations
+    Preprocessing wrapper for Tetris observations (kept for RGB mode)
     """
 
     def __init__(self, env, target_size=(84, 84), grayscale=True):
@@ -155,49 +303,16 @@ class TetrisPreprocessWrapper(gym.ObservationWrapper):
         )
 
     def observation(self, obs):
-        # Handle different observation types
+        # This wrapper is now mainly for RGB observations
         if len(obs.shape) == 3:  # RGB image
             resized = cv2.resize(obs, self.target_size)
             if self.grayscale:
                 resized = cv2.cvtColor(resized, cv2.COLOR_RGB2GRAY)
                 resized = np.expand_dims(resized, axis=-1)
-        elif len(obs.shape) == 1:  # Flattened features
-            # For feature vectors, create a square 2D representation
-            obs_len = len(obs)
-
-            # Find the best square size
-            side_length = int(np.ceil(np.sqrt(obs_len)))
-            target_len = side_length * side_length
-
-            # Pad to make it square (with zeros, not negative padding)
-            if obs_len < target_len:
-                padding_needed = target_len - obs_len
-                obs_padded = np.pad(obs, (0, padding_needed),
-                                    mode='constant', constant_values=0)
-            else:
-                obs_padded = obs[:target_len]  # Truncate if too long
-
-            # Reshape to 2D
-            obs_2d = obs_padded.reshape(side_length, side_length)
-
-            # Ensure values are in proper range for cv2
-            obs_2d = np.clip(obs_2d * 255, 0, 255).astype(np.uint8)
-
-            # Resize to target size
-            resized = cv2.resize(obs_2d, self.target_size)
-
-            # Convert back to float and normalize
-            resized = resized.astype(np.float32) / 255.0
-
-            if not self.grayscale:
-                resized = cv2.cvtColor(resized, cv2.COLOR_GRAY2RGB)
-            else:
-                resized = np.expand_dims(resized, axis=-1)
+            return resized.astype(np.float32) / 255.0
         else:
-            # For other shapes, just return as is
-            resized = obs
-
-        return resized
+            # For non-RGB inputs, pass through (board wrapper handles it)
+            return obs
 
 
 class FrameStackWrapper(gym.ObservationWrapper):
@@ -240,7 +355,7 @@ class FrameStackWrapper(gym.ObservationWrapper):
 
 
 def make_env(env_name=None, render_mode=None, preprocess=True, frame_stack=4,
-             use_rgb_rendering=False, **env_kwargs):
+             use_rgb_rendering=False, use_board_wrapper=True, **env_kwargs):
     """
     Create and wrap Tetris Gymnasium environment
     
@@ -250,6 +365,7 @@ def make_env(env_name=None, render_mode=None, preprocess=True, frame_stack=4,
         preprocess: Whether to apply preprocessing
         frame_stack: Number of frames to stack (0 to disable)
         use_rgb_rendering: Use RGB rendering instead of dict observations
+        use_board_wrapper: Use the new board wrapper for better spatial info
         **env_kwargs: Additional environment arguments
     
     Returns:
@@ -269,8 +385,18 @@ def make_env(env_name=None, render_mode=None, preprocess=True, frame_stack=4,
 
     # Apply preprocessing if requested
     if preprocess:
-        env = TetrisPreprocessWrapper(
-            env, target_size=(84, 84), grayscale=True)
+        if use_rgb_rendering:
+            # For RGB mode, use the original preprocessing wrapper
+            env = TetrisPreprocessWrapper(
+                env, target_size=(84, 84), grayscale=True)
+        elif use_board_wrapper:
+            # For flattened observations, use the new board wrapper
+            env = TetrisBoardWrapper(
+                env, target_size=(84, 84), grayscale=True)
+        else:
+            # Fallback to original preprocessing
+            env = TetrisPreprocessWrapper(
+                env, target_size=(84, 84), grayscale=True)
 
     # Apply frame stacking if requested
     if frame_stack > 1:
@@ -296,8 +422,8 @@ def test_environment(episodes=1, steps_per_episode=100):
     try:
         print("Testing Tetris Gymnasium environment...")
 
-        # Test basic environment
-        env = make_env(render_mode="rgb_array")
+        # Test basic environment with board wrapper
+        env = make_env(render_mode="rgb_array", use_board_wrapper=True)
 
         for episode in range(episodes):
             obs, info = env.reset(seed=42)
@@ -336,10 +462,11 @@ def test_different_configs():
     print("\nTesting different configurations...")
 
     configs = [
-        {"name": "Default", "kwargs": {}},
+        {"name": "Default (with board wrapper)", "kwargs": {"use_board_wrapper": True}},
         {"name": "No preprocessing", "kwargs": {"preprocess": False}},
         {"name": "No frame stack", "kwargs": {"frame_stack": 1}},
         {"name": "RGB rendering", "kwargs": {"use_rgb_rendering": True}},
+        {"name": "Old preprocessing (no board wrapper)", "kwargs": {"use_board_wrapper": False}},
     ]
 
     for config in configs:
@@ -350,10 +477,55 @@ def test_different_configs():
             print(f"    Observation shape: {obs.shape}")
             print(f"    Observation dtype: {obs.dtype}")
             print(f"    Observation range: [{obs.min():.3f}, {obs.max():.3f}]")
+            
+            # Take a few steps to ensure it works
+            for _ in range(5):
+                action = env.action_space.sample()
+                obs, reward, terminated, truncated, info = env.step(action)
+                if terminated or truncated:
+                    obs, info = env.reset()
+            
             env.close()
             print(f"    ✅ {config['name']} works")
         except Exception as e:
             print(f"    ❌ {config['name']} failed: {e}")
+
+
+def visualize_board_wrapper():
+    """Visualize what the board wrapper produces"""
+    print("\nVisualizing Board Wrapper Output...")
+    
+    try:
+        import matplotlib.pyplot as plt
+        
+        env = make_env(use_board_wrapper=True, frame_stack=1)
+        obs, info = env.reset()
+        
+        # Take a few steps to get an interesting board state
+        for _ in range(20):
+            action = env.action_space.sample()
+            obs, reward, terminated, truncated, info = env.step(action)
+            if terminated or truncated:
+                break
+        
+        # Show the observation
+        plt.figure(figsize=(6, 6))
+        plt.imshow(obs[:, :, 0], cmap='gray', interpolation='nearest')
+        plt.title('Board Wrapper Output (84x84)')
+        plt.colorbar()
+        plt.grid(True, alpha=0.3)
+        
+        # Save to file
+        plt.savefig('board_wrapper_visualization.png')
+        print("  Saved visualization to board_wrapper_visualization.png")
+        plt.close()
+        
+        env.close()
+        
+    except ImportError:
+        print("  Matplotlib not available, skipping visualization")
+    except Exception as e:
+        print(f"  Visualization failed: {e}")
 
 
 if __name__ == "__main__":
@@ -362,6 +534,9 @@ if __name__ == "__main__":
 
     if success:
         test_different_configs()
+        visualize_board_wrapper()
         print("\n🎉 All environment tests passed!")
+        print("\nThe board wrapper is now active and will preserve the Tetris board structure!")
+        print("Your model will now see the actual 20x10 grid (scaled to 84x84) instead of scrambled data.")
     else:
         print("\n❌ Environment tests failed!")
