@@ -99,8 +99,8 @@ class DQN(nn.Module):
         x = F.relu(self.conv2(x))
         x = F.relu(self.conv3(x))
 
-        # Flatten for fully connected layers
-        x = x.view(x.size(0), -1)
+        # Flatten for fully connected layers (ensure contiguous memory)
+        x = x.contiguous().view(x.size(0), -1)
 
         # Fully connected layers
         x = F.relu(self.fc1(x))
@@ -214,7 +214,8 @@ class DuelingDQN(nn.Module):
 
         # Extract features
         features = self.features(x)
-        features = features.view(features.size(0), -1)
+        # After permute/features, tensor may be non-contiguous → use reshape
+        features = features.reshape(features.size(0), -1)
 
         # Compute value and advantage streams
         value = self.value_stream(features)

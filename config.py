@@ -1,4 +1,4 @@
-# config.py - Fixed configuration for Tetris Gymnasium AI
+# config.py - Final fixed configuration for Tetris Gymnasium AI
 
 import gymnasium as gym
 from gymnasium.envs.registration import register
@@ -143,12 +143,12 @@ class TetrisBoardWrapper(gym.ObservationWrapper):
 
 
 class FrameStackWrapper(gym.ObservationWrapper):
-    """Stack frames with guaranteed consistent output shape"""
+    """Fixed frame stacking with proper reset behavior"""
 
     def __init__(self, env, num_frames=4):
         super().__init__(env)
         self.num_frames = num_frames
-        self.frames = None  # Will be initialized properly
+        self.frames = None
 
         # Calculate output observation space
         old_space = env.observation_space
@@ -168,35 +168,24 @@ class FrameStackWrapper(gym.ObservationWrapper):
 
         print(f"FrameStackWrapper: {old_space.shape} -> {new_shape}")
 
-    def _ensure_frames_initialized(self, obs):
-        """Initialize frame buffer with the first observation"""
-        if self.frames is None:
-            # Initialize with copies of the first observation
-            self.frames = [obs.copy() for _ in range(self.num_frames)]
-            print(f"Frame buffer initialized with shape {obs.shape}")
-
     def observation(self, obs):
-        """Stack frames with guaranteed consistent output"""
+        """Stack frames with simple, reliable logic"""
         # Ensure observation has correct shape
         if len(obs.shape) != 3:
             raise ValueError(f"Expected 3D observation, got {obs.shape}")
 
-        # Initialize if needed
-        self._ensure_frames_initialized(obs)
-
-        # Add new frame and remove oldest
-        self.frames.append(obs.copy())
-        if len(self.frames) > self.num_frames:
-            self.frames.pop(0)
-
-        # Ensure we always have exactly num_frames
-        while len(self.frames) < self.num_frames:
-            self.frames.insert(0, obs.copy())
+        # Initialize frame buffer if needed
+        if self.frames is None:
+            # Create buffer filled with the current observation
+            self.frames = [obs.copy() for _ in range(self.num_frames)]
+        else:
+            # Shift frames and add new one
+            self.frames = self.frames[1:] + [obs.copy()]
 
         # Stack along channel dimension
         stacked = np.concatenate(self.frames, axis=-1)
 
-        # Verify output shape
+        # Verify output shape (optional - remove for production)
         expected_shape = self.observation_space.shape
         if stacked.shape != expected_shape:
             raise ValueError(f"Frame stack output shape mismatch: "
@@ -205,17 +194,12 @@ class FrameStackWrapper(gym.ObservationWrapper):
         return stacked
 
     def reset(self, **kwargs):
-        """Reset frame buffer completely"""
-        # Clear frame buffer on reset
+        """Reset frame buffer - trust the wrapper chain"""
+        # Clear frame buffer so first observation will re-initialize it
         self.frames = None
 
-        # Get new observation
-        obs, info = super().reset(**kwargs)
-
-        # Process through observation method to initialize frames
-        processed_obs = self.observation(obs)
-
-        return processed_obs, info
+        # super().reset() will call self.observation() exactly once
+        return super().reset(**kwargs)
 
 
 def make_env(env_name=None, render_mode=None, preprocess=True, frame_stack=4, **env_kwargs):
