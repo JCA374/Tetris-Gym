@@ -199,6 +199,10 @@ def train_single_configuration(args):
         shaping_config=shaping_config
     )
 
+    # 🔥 ADD THESE TWO LINES RIGHT HERE:
+    agent.epsilon_end = 0.05      # Don't drop below 5% (was 0.01)
+    agent.epsilon_decay = 0.9995  # Slower decay (was 0.995)
+
     # Resume if requested
     start_episode = 0
     if args.resume:

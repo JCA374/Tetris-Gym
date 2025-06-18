@@ -163,8 +163,8 @@ class TetrisRewardShaper:
         # Carefully tuned initial weights (normalized to prevent dominance)
         initial_weights = {
             # Primary objectives (higher weights)
-            'lines_cleared': 10.0,
-            'tetris_bonus': 5.0,
+            'lines_cleared': 20.0,
+            'tetris_bonus': 15.0,
             'game_over_penalty': -50.0,
 
             # Board health (moderate weights, normalized)
