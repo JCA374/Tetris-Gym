@@ -12,7 +12,7 @@ try:
         id="TetrisManual-v0",
         entry_point="tetris_gymnasium.envs.tetris:Tetris",
     )
-    print("✅ Tetris environment registered successfully")
+    print("Tetris environment registered successfully")
 except gym.error.Error:
     pass
 
@@ -261,11 +261,11 @@ def test_environment(episodes=1, steps_per_episode=100):
             print(f"  Final observation shape: {obs.shape}")
 
         env.close()
-        print("✅ Environment test completed successfully!")
+        print("Environment test completed successfully!")
         return True
 
     except Exception as e:
-        print(f"❌ Environment test failed: {e}")
+        print(f"Environment test failed: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -275,7 +275,7 @@ if __name__ == "__main__":
     # Test the environment creation
     success = test_environment()
     if success:
-        print("\n🎉 Environment tests passed!")
+        print("\nEnvironment tests passed!")
         print("Ready for training!")
     else:
-        print("\n❌ Environment tests failed!")
+        print("\nEnvironment tests failed!")

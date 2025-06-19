@@ -296,7 +296,7 @@ def train_single_configuration(args):
 
         # Periodic saves
         if (episode + 1) % args.save_freq == 0:
-            agent.save_checkpoint(episode + 1, MODEL_DIR)
+            agent.save_checkpoint(args.episodes, MODEL_DIR)
             logger.save_logs()
             logger.plot_progress()
 
