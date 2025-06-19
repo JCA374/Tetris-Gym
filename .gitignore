@@ -130,7 +130,7 @@ models/
 *.pickle
 
 # Training logs and outputs
-logs/
+#logs/
 runs/
 outputs/
 experiments/
