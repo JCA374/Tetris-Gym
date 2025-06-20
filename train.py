@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Enhanced training script with reward shaping integration and ablation studies
+FIXED: Variable scope errors and proper episode handling
 """
 
 from config import make_env, ENV_NAME, LR, GAMMA, BATCH_SIZE, MAX_EPISODES, MODEL_DIR, LOG_DIR
@@ -19,8 +20,6 @@ import torch
 
 # Add src to path for imports
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
-
-# Import Agent from the corrected integration code
 
 
 def parse_args():
@@ -122,57 +121,8 @@ def evaluate_agent(agent, env, n_episodes=5):
     }
 
 
-def run_ablation_study(args):
-    """Run comprehensive ablation study"""
-    print("Running Reward Shaping Ablation Study")
-    print("=" * 60)
-
-    shaping_methods = [
-        ('none', 'No reward shaping'),
-        ('simple', 'Height + Hole penalties only'),
-        ('full', 'Full multi-objective shaping')
-    ]
-
-    results = {}
-
-    for method, description in shaping_methods:
-        print(f"\nTesting: {description}")
-        print("-" * 40)
-
-        # Override shaping method
-        args.reward_shaping = method
-        args.episodes = 200  # Shorter for ablation
-        args.experiment_name = f"ablation_{method}"
-
-        # Run training
-        result = train_single_configuration(args)
-        results[method] = result
-
-        print(f"Results for {method}:")
-        print(f"  Final avg reward: {result['final_avg_reward']:.2f}")
-        print(f"  Max reward: {result['max_reward']:.2f}")
-        print(f"  Avg lines cleared: {result['avg_lines_cleared']:.2f}")
-        print(f"  Training time: {result['training_time']:.1f}s")
-
-    # Save ablation results
-    ablation_file = os.path.join(
-        LOG_DIR, f"ablation_study_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
-    with open(ablation_file, 'w') as f:
-        json.dump(results, f, indent=2)
-
-    print("\n" + "=" * 60)
-    print("ABLATION STUDY COMPLETE")
-    print("=" * 60)
-    print("Results summary:")
-    for method, result in results.items():
-        print(f"{method:10s}: Avg={result['final_avg_reward']:6.1f}, "
-              f"Max={result['max_reward']:6.1f}, "
-              f"Lines={result['avg_lines_cleared']:4.1f}")
-    print(f"\nDetailed results saved to: {ablation_file}")
-
-
 def train_single_configuration(args):
-    """Train with a single configuration and return results"""
+    """Train with a single configuration and return results - FIXED VERSION"""
     start_time = time.time()
 
     # Create environment
@@ -187,7 +137,7 @@ def train_single_configuration(args):
             'hole_weight': args.hole_weight
         }
 
-    # Initialize agent with reward shaping
+    # Initialize agent with reward shaping and max_episodes parameter
     agent = Agent(
         obs_space=env.observation_space,
         action_space=env.action_space,
@@ -196,18 +146,37 @@ def train_single_configuration(args):
         batch_size=args.batch_size,
         model_type=args.model_type,
         reward_shaping=args.reward_shaping,
-        shaping_config=shaping_config
+        shaping_config=shaping_config,
+        max_episodes=args.episodes  # 🔥 PASS max_episodes TO AGENT
     )
-
-    # 🔥 ADD THESE TWO LINES RIGHT HERE:
-    agent.epsilon_end = 0.05      # Don't drop below 5% (was 0.01)
-    agent.epsilon_decay = 0.9995  # Slower decay (was 0.995)
 
     # Resume if requested
     start_episode = 0
     if args.resume:
         if agent.load_checkpoint(latest=True, model_dir=MODEL_DIR):
             start_episode = agent.episodes_done
+            print(f"Resuming from episode {start_episode}")
+        else:
+            print("No checkpoint found, starting fresh")
+
+    # 🔥 CRITICAL FIX: Handle case where agent has already completed target episodes
+    if start_episode >= args.episodes:
+        print(f"⚠️  Agent already completed {start_episode} episodes (target: {args.episodes})")
+        print(f"Options:")
+        print(f"1. Extend training: python train.py --episodes {start_episode + 5000} --resume")
+        print(f"2. Start fresh: python train.py --episodes {args.episodes}")
+        print(f"3. Evaluate current model: python evaluate.py --episodes 20 --render")
+        
+        # Return current stats
+        return {
+            'final_avg_reward': np.mean(agent.total_rewards[-50:]) if agent.total_rewards else 0,
+            'max_reward': np.max(agent.total_rewards) if agent.total_rewards else 0,
+            'avg_lines_cleared': 0,  # Would need to calculate from episode_metrics
+            'training_time': 0,
+            'shaping_analysis': {},
+            'total_episodes': start_episode,
+            'note': 'Training already completed'
+        }
 
     # Initialize logger
     experiment_name = args.experiment_name or f"tetris_{args.reward_shaping}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -218,11 +187,22 @@ def train_single_configuration(args):
     episode_lines_cleared = []
     original_rewards = []  # For comparison
 
-    # Training loop
-    print(f"Starting training for {args.episodes} episodes...")
+    # 🔥 FIXED: Proper episode range calculation
+    total_episodes_to_train = args.episodes
+    episodes_to_train = total_episodes_to_train - start_episode
+    
+    print(f"Starting training for {episodes_to_train} episodes...")
+    print(f"Episode range: {start_episode + 1} to {total_episodes_to_train}")
     print(f"Reward shaping: {args.reward_shaping}")
+    print(f"Current epsilon: {agent.epsilon:.4f}")
 
-    for episode in range(start_episode, args.episodes):
+    # 🔥 FIXED: Initialize episode variable properly
+    episode = start_episode  # Initialize BEFORE the loop
+
+    # Training loop with proper episode handling
+    for episode_offset in range(episodes_to_train):
+        episode = start_episode + episode_offset  # Current episode number
+        
         obs, info = env.reset()
         episode_reward = 0
         original_episode_reward = 0  # Track original reward
@@ -272,36 +252,37 @@ def train_single_configuration(args):
         )
 
         # Periodic logging
-        if (episode + 1) % args.log_freq == 0:
+        if (episode_offset + 1) % args.log_freq == 0:
             stats = agent.get_stats()
-            shaping_analysis = agent.get_shaping_analysis()
-
-            print(f"Episode {episode+1:4d} | "
+            
+            # Calculate recent averages
+            recent_rewards = episode_rewards[-10:] if len(episode_rewards) >= 10 else episode_rewards
+            recent_lines = episode_lines_cleared[-10:] if len(episode_lines_cleared) >= 10 else episode_lines_cleared
+            
+            print(f"Episode {episode+1:5d} | "
                   f"Reward: {episode_reward:6.1f} | "
                   f"Orig: {original_episode_reward:6.1f} | "
-                  f"Avg: {stats['avg_reward']:6.1f} | "
+                  f"Avg: {np.mean(recent_rewards):6.1f} | "
                   f"Lines: {lines_cleared_this_episode:2d} | "
-                  f"Epsilon: {agent.epsilon:.4f}")
-
-            if shaping_analysis and args.reward_shaping != 'none':
-                improvement = shaping_analysis.get('reward_improvement', 0)
-                print(f"         | Shaping improvement: {improvement:+5.1f}")
+                  f"Avg Lines: {np.mean(recent_lines):4.1f} | "
+                  f"ε: {agent.epsilon:.4f}")
 
         # Periodic evaluation
-        if (episode + 1) % args.eval_freq == 0:
+        if (episode_offset + 1) % args.eval_freq == 0:
             print(f"\nEvaluating at episode {episode+1}...")
             eval_results = evaluate_agent(agent, env, n_episodes=5)
             print(
                 f"Evaluation - Mean: {eval_results['mean_reward']:.1f} ± {eval_results['std_reward']:.1f}")
 
         # Periodic saves
-        if (episode + 1) % args.save_freq == 0:
-            agent.save_checkpoint(args.episodes, MODEL_DIR)
+        if (episode_offset + 1) % args.save_freq == 0:
+            agent.save_checkpoint(episode + 1, MODEL_DIR)  # episode is now properly defined
             logger.save_logs()
             logger.plot_progress()
 
-    # Final save and cleanup
-    agent.save_checkpoint(episode + 1, MODEL_DIR)
+    # 🔥 FIXED: Final save with proper episode number
+    final_episode = episode + 1  # episode is defined from the loop
+    agent.save_checkpoint(final_episode, MODEL_DIR)
     logger.save_logs()
     logger.plot_progress()
 
@@ -310,12 +291,12 @@ def train_single_configuration(args):
 
     # Return results for ablation study
     return {
-        'final_avg_reward': np.mean(episode_rewards[-50:]) if len(episode_rewards) >= 50 else np.mean(episode_rewards),
-        'max_reward': np.max(episode_rewards),
-        'avg_lines_cleared': np.mean(episode_lines_cleared),
+        'final_avg_reward': np.mean(episode_rewards[-50:]) if len(episode_rewards) >= 50 else np.mean(episode_rewards) if episode_rewards else 0,
+        'max_reward': np.max(episode_rewards) if episode_rewards else 0,
+        'avg_lines_cleared': np.mean(episode_lines_cleared) if episode_lines_cleared else 0,
         'training_time': training_time,
         'shaping_analysis': agent.get_shaping_analysis(),
-        'total_episodes': len(episode_rewards)
+        'total_episodes': final_episode
     }
 
 
@@ -324,6 +305,7 @@ def train(args):
     print("Starting Tetris AI Training with Reward Shaping")
     print("=" * 60)
     print(f"Reward shaping method: {args.reward_shaping}")
+    print(f"Target episodes: {args.episodes}")
 
     # Print system information
     print_system_info()
@@ -332,33 +314,40 @@ def train(args):
     make_dir(MODEL_DIR)
     make_dir(LOG_DIR)
 
-    if args.ablation_study:
-        run_ablation_study(args)
-    else:
-        result = train_single_configuration(args)
+    # Run training
+    result = train_single_configuration(args)
 
-        print("\n" + "=" * 60)
-        print("TRAINING COMPLETED")
-        print("=" * 60)
-        print(f"Final average reward: {result['final_avg_reward']:.2f}")
-        print(f"Maximum reward achieved: {result['max_reward']:.2f}")
-        print(
-            f"Average lines cleared per episode: {result['avg_lines_cleared']:.2f}")
-        print(f"Total training time: {result['training_time']/3600:.2f} hours")
+    print("\n" + "=" * 60)
+    print("TRAINING COMPLETED")
+    print("=" * 60)
+    print(f"Final average reward: {result['final_avg_reward']:.2f}")
+    print(f"Maximum reward achieved: {result['max_reward']:.2f}")
+    print(f"Average lines cleared per episode: {result['avg_lines_cleared']:.2f}")
+    print(f"Total training time: {result['training_time']/3600:.2f} hours")
+    print(f"Total episodes completed: {result['total_episodes']}")
 
-        # Print shaping analysis
-        shaping_analysis = result['shaping_analysis']
-        if shaping_analysis and args.reward_shaping != 'none':
-            print("\nReward Shaping Analysis:")
-            improvement = shaping_analysis.get('reward_improvement', 0)
-            print(f"  Average reward improvement: {improvement:+.2f}")
-            correlation = shaping_analysis.get('correlation', 0)
-            print(f"  Original-Shaped correlation: {correlation:.3f}")
+    # Print shaping analysis if available
+    shaping_analysis = result['shaping_analysis']
+    if shaping_analysis and args.reward_shaping != 'none':
+        print("\nReward Shaping Analysis:")
+        improvement = shaping_analysis.get('reward_improvement', 0)
+        print(f"  Average reward improvement: {improvement:+.2f}")
+        correlation = shaping_analysis.get('correlation', 0)
+        print(f"  Original-Shaped correlation: {correlation:.3f}")
 
 
 def main():
     """Main entry point"""
     args = parse_args()
+    
+    # 🔥 FIX: Validate episode count for very long training
+    if args.episodes > 100000:
+        print(f"⚠️  Very long training requested: {args.episodes:,} episodes")
+        response = input("This will take days/weeks. Continue? (y/N): ")
+        if response.lower() != 'y':
+            print("Training cancelled.")
+            return
+            
     train(args)
 
 
