@@ -260,7 +260,7 @@ class Agent:
         self.episode_metrics.append(episode_data)
 
     def save_checkpoint(self, episode, model_dir="models/"):
-        """Save checkpoint with robust error handling"""
+        """Save checkpoint with robust error handling for PyTorch serialization issues"""
         make_dir(model_dir)
 
         try:
@@ -277,7 +277,7 @@ class Agent:
             # Save model weights separately for better compatibility
             latest_path = os.path.join(model_dir, 'latest_checkpoint.pth')
             
-            # Method 1: Try standard torch.save
+            # Method 1: Try standard torch.save with error handling
             try:
                 # Prepare full checkpoint
                 full_checkpoint = {
