@@ -5,12 +5,13 @@ import torch.optim as optim
 import numpy as np
 from collections import deque
 import os
+import pickle
 from .model import create_model
 from .utils import make_dir
 
 
 class Agent:
-    """Fixed agent with guaranteed shape consistency"""
+    """Fixed agent with robust checkpoint saving"""
 
     def __init__(self, obs_space, action_space, lr=1e-4, gamma=0.99,
                  epsilon_start=1.0, epsilon_end=0.01, epsilon_decay=0.995,
@@ -259,57 +260,148 @@ class Agent:
         self.episode_metrics.append(episode_data)
 
     def save_checkpoint(self, episode, model_dir="models/"):
-        """Save checkpoint"""
+        """Save checkpoint with robust error handling"""
         make_dir(model_dir)
 
-        checkpoint = {
-            'episode': episode,
-            'steps_done': self.steps_done,
-            'q_network_state_dict': self.q_network.state_dict(),
-            'target_network_state_dict': self.target_network.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'epsilon': self.epsilon,
-            'total_rewards': self.total_rewards,
-            'episode_metrics': self.episode_metrics,
-            'reward_shaping_type': self.reward_shaping_type,
-        }
+        try:
+            # Prepare checkpoint data
+            checkpoint_data = {
+                'episode': episode,
+                'steps_done': self.steps_done,
+                'epsilon': self.epsilon,
+                'total_rewards': self.total_rewards,
+                'episode_metrics': self.episode_metrics,
+                'reward_shaping_type': self.reward_shaping_type,
+            }
 
-        latest_path = os.path.join(model_dir, 'latest_checkpoint.pth')
-        torch.save(checkpoint, latest_path)
+            # Save model weights separately for better compatibility
+            latest_path = os.path.join(model_dir, 'latest_checkpoint.pth')
+            
+            # Method 1: Try standard torch.save
+            try:
+                # Prepare full checkpoint
+                full_checkpoint = {
+                    **checkpoint_data,
+                    'q_network_state_dict': self.q_network.state_dict(),
+                    'target_network_state_dict': self.target_network.state_dict(),
+                    'optimizer_state_dict': self.optimizer.state_dict(),
+                }
+                
+                torch.save(full_checkpoint, latest_path)
+                print(f"✅ Checkpoint saved successfully: {latest_path}")
+                
+            except Exception as torch_error:
+                print(f"❌ PyTorch save failed: {torch_error}")
+                print("🔄 Trying alternative save method...")
+                
+                # Method 2: Save components separately
+                try:
+                    # Save model weights only
+                    model_path = os.path.join(model_dir, 'latest_model.pth')
+                    torch.save({
+                        'q_network': self.q_network.state_dict(),
+                        'target_network': self.target_network.state_dict(),
+                        'optimizer': self.optimizer.state_dict(),
+                    }, model_path)
+                    
+                    # Save training data with pickle
+                    data_path = os.path.join(model_dir, 'latest_training_data.pkl')
+                    with open(data_path, 'wb') as f:
+                        pickle.dump(checkpoint_data, f)
+                    
+                    print(f"✅ Alternative save successful:")
+                    print(f"   Model: {model_path}")
+                    print(f"   Data: {data_path}")
+                    
+                except Exception as alt_error:
+                    print(f"❌ Alternative save also failed: {alt_error}")
+                    print("⚠️  Continuing training without saving...")
 
-        if episode % 100 == 0:
-            episode_path = os.path.join(
-                model_dir, f'checkpoint_episode_{episode}.pth')
-            torch.save(checkpoint, episode_path)
-            print(f"Checkpoint saved: {episode_path}")
+            # Save periodic checkpoint
+            if episode % 100 == 0:
+                try:
+                    episode_path = os.path.join(model_dir, f'checkpoint_episode_{episode}.pth')
+                    torch.save({
+                        'q_network_state_dict': self.q_network.state_dict(),
+                        'episode': episode,
+                        'epsilon': self.epsilon,
+                    }, episode_path)
+                    print(f"📦 Episode checkpoint saved: {episode_path}")
+                except Exception as e:
+                    print(f"⚠️  Episode checkpoint failed: {e}")
+
+        except Exception as e:
+            print(f"❌ Critical error in save_checkpoint: {e}")
+            print("⚠️  Training will continue without saving...")
 
     def load_checkpoint(self, latest=False, path=None, model_dir="models/"):
-        """Load checkpoint"""
-        if latest:
-            path = os.path.join(model_dir, 'latest_checkpoint.pth')
+        """Load checkpoint with robust error handling"""
+        try:
+            if latest:
+                path = os.path.join(model_dir, 'latest_checkpoint.pth')
 
-        if path and os.path.exists(path):
-            checkpoint = torch.load(
-                path, map_location=self.device, weights_only=False)
+            if path and os.path.exists(path):
+                # Try standard loading
+                try:
+                    checkpoint = torch.load(
+                        path, map_location=self.device, weights_only=False)
 
-            self.q_network.load_state_dict(checkpoint['q_network_state_dict'])
-            self.target_network.load_state_dict(
-                checkpoint['target_network_state_dict'])
-            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                    self.q_network.load_state_dict(checkpoint['q_network_state_dict'])
+                    self.target_network.load_state_dict(
+                        checkpoint['target_network_state_dict'])
+                    self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 
-            self.episodes_done = checkpoint['episode']
-            self.steps_done = checkpoint['steps_done']
-            self.epsilon = checkpoint['epsilon']
-            self.total_rewards = checkpoint.get('total_rewards', [])
-            self.episode_metrics = checkpoint.get('episode_metrics', [])
+                    self.episodes_done = checkpoint['episode']
+                    self.steps_done = checkpoint['steps_done']
+                    self.epsilon = checkpoint['epsilon']
+                    self.total_rewards = checkpoint.get('total_rewards', [])
+                    self.episode_metrics = checkpoint.get('episode_metrics', [])
 
-            print(f"Checkpoint loaded: {path}")
-            print(
-                f"Resuming from episode {self.episodes_done}, epsilon={self.epsilon:.4f}")
-            return True
-        else:
-            print(f"No checkpoint found at {path}")
-            return False
+                    print(f"✅ Checkpoint loaded: {path}")
+                    print(
+                        f"Resuming from episode {self.episodes_done}, epsilon={self.epsilon:.4f}")
+                    return True
+                    
+                except Exception as torch_error:
+                    print(f"❌ Standard loading failed: {torch_error}")
+                    
+                    # Try alternative loading
+                    model_path = os.path.join(model_dir, 'latest_model.pth')
+                    data_path = os.path.join(model_dir, 'latest_training_data.pkl')
+                    
+                    if os.path.exists(model_path) and os.path.exists(data_path):
+                        try:
+                            # Load model weights
+                            model_data = torch.load(model_path, map_location=self.device, weights_only=False)
+                            self.q_network.load_state_dict(model_data['q_network'])
+                            self.target_network.load_state_dict(model_data['target_network'])
+                            self.optimizer.load_state_dict(model_data['optimizer'])
+                            
+                            # Load training data
+                            with open(data_path, 'rb') as f:
+                                training_data = pickle.load(f)
+                            
+                            self.episodes_done = training_data['episode']
+                            self.steps_done = training_data['steps_done']
+                            self.epsilon = training_data['epsilon']
+                            self.total_rewards = training_data.get('total_rewards', [])
+                            self.episode_metrics = training_data.get('episode_metrics', [])
+                            
+                            print(f"✅ Alternative loading successful")
+                            print(f"Resuming from episode {self.episodes_done}, epsilon={self.epsilon:.4f}")
+                            return True
+                            
+                        except Exception as alt_error:
+                            print(f"❌ Alternative loading failed: {alt_error}")
+                    
+            else:
+                print(f"❌ No checkpoint found at {path}")
+                return False
+                
+        except Exception as e:
+            print(f"❌ Critical error in load_checkpoint: {e}")
+            
+        return False
 
     def get_stats(self):
         """Get training statistics"""
