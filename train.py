@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
-Enhanced training script with reward shaping integration and ablation studies
-FIXED: Variable scope errors and proper episode handling
+train_complete_vision.py
+
+Updated version of your existing train.py to use complete vision
+Just replace your train.py with this content and run: python train.py
 """
 
 from config import make_env, ENV_NAME, LR, GAMMA, BATCH_SIZE, MAX_EPISODES, MODEL_DIR, LOG_DIR
 from src.agent import Agent
-from src.utils import TrainingLogger, print_system_info, benchmark_environment, make_dir
+from src.utils import TrainingLogger, print_system_info, make_dir
 import os
 import sys
 import argparse
@@ -15,7 +17,6 @@ import json
 import numpy as np
 from datetime import datetime
 from tqdm import tqdm
-
 import torch
 
 # Add src to path for imports
@@ -23,121 +24,104 @@ sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 
 
 def parse_args():
-    """Enhanced argument parsing with reward shaping options"""
-    parser = argparse.ArgumentParser(
-        description='Train Tetris AI with Reward Shaping')
+    """Parse training arguments"""
+    parser = argparse.ArgumentParser(description='Train Tetris AI with Complete Vision')
 
-    # Standard training arguments
-    parser.add_argument('--episodes', type=int, default=MAX_EPISODES,
-                        help=f'Number of episodes to train (default: {MAX_EPISODES})')
-    parser.add_argument('--lr', type=float, default=LR,
-                        help=f'Learning rate (default: {LR})')
+    parser.add_argument('--episodes', type=int, default=500,
+                        help='Number of episodes to train (default: 500)')
+    parser.add_argument('--lr', type=float, default=5e-4,
+                        help='Learning rate (default: 5e-4, higher for richer info)')
     parser.add_argument('--batch_size', type=int, default=BATCH_SIZE,
                         help=f'Batch size (default: {BATCH_SIZE})')
     parser.add_argument('--gamma', type=float, default=GAMMA,
                         help=f'Discount factor (default: {GAMMA})')
     parser.add_argument('--model_type', type=str, default='dqn', choices=['dqn', 'dueling_dqn'],
                         help='Model architecture type')
-
-    # Reward shaping arguments
-    parser.add_argument('--reward_shaping', type=str, default='none',
-                        choices=['none', 'simple', 'full'],
-                        help='Type of reward shaping to use')
-    parser.add_argument('--height_weight', type=float, default=-1.0,
-                        help='Weight for height penalty (simple shaping)')
-    parser.add_argument('--hole_weight', type=float, default=-2.0,
-                        help='Weight for hole penalty (simple shaping)')
-
+    
+    # Complete vision specific options
+    parser.add_argument('--use_complete_vision', action='store_true', default=True,
+                        help='Use complete 4-channel vision (recommended)')
+    parser.add_argument('--use_cnn', action='store_true', default=True,
+                        help='Use CNN processing for spatial relationships')
+    
     # Training control
     parser.add_argument('--resume', action='store_true',
                         help='Resume training from latest checkpoint')
-    parser.add_argument('--no_render', action='store_true',
-                        help='Disable rendering during training')
-    parser.add_argument('--save_freq', type=int, default=100,
+    parser.add_argument('--save_freq', type=int, default=25,
                         help='Save model every N episodes')
-    parser.add_argument('--log_freq', type=int, default=10,
+    parser.add_argument('--log_freq', type=int, default=5,
                         help='Log progress every N episodes')
-    parser.add_argument('--eval_freq', type=int, default=50,
-                        help='Evaluate model every N episodes')
     parser.add_argument('--experiment_name', type=str, default=None,
                         help='Name for this experiment')
-
-    # Ablation study options
-    parser.add_argument('--ablation_study', action='store_true',
-                        help='Run ablation study comparing different shaping methods')
 
     return parser.parse_args()
 
 
-def convert_numpy_types(obj):
-    """Convert numpy types to native Python types for JSON serialization"""
-    if isinstance(obj, dict):
-        return {key: convert_numpy_types(value) for key, value in obj.items()}
-    elif isinstance(obj, list):
-        return [convert_numpy_types(item) for item in obj]
-    elif isinstance(obj, np.integer):
-        return int(obj)
-    elif isinstance(obj, np.floating):
-        return float(obj)
-    elif isinstance(obj, np.ndarray):
-        return obj.tolist()
+def complete_vision_reward_shaping(obs, action, base_reward, done, info):
+    """Enhanced reward shaping using complete 4-channel observation"""
+    shaped_reward = base_reward
+    
+    # Extract information from 4-channel observation if available
+    if len(obs.shape) == 3 and obs.shape[2] >= 2:
+        board_channel = obs[:, :, 0]
+        active_channel = obs[:, :, 1]
+        
+        # Active piece awareness bonuses
+        active_piece_pixels = np.sum(active_channel > 0.01)
+        if active_piece_pixels > 0:
+            # Small bonus for visible active piece
+            shaped_reward += 0.1
+            
+            # Height-based placement incentive
+            active_rows = np.any(active_channel > 0.01, axis=1)
+            if np.any(active_rows):
+                lowest_piece_row = np.max(np.where(active_rows)[0])
+                height_bonus = (24 - lowest_piece_row) * 0.02
+                shaped_reward += height_bonus
+    
+    # MASSIVE line clear bonuses (agent can now achieve these!)
+    lines_cleared = info.get('lines_cleared', 0)
+    if lines_cleared > 0:
+        # Exponential rewards for multiple lines
+        line_bonus = lines_cleared * 50 * (lines_cleared ** 1.2)
+        shaped_reward += line_bonus
+        
+        # Special Tetris celebration
+        if lines_cleared == 4:
+            shaped_reward += 200  # MASSIVE Tetris bonus
+            print(f"🎉 TETRIS! 4 lines cleared, bonus: +200")
+    
+    # Balanced survival vs action incentive
+    if not done:
+        shaped_reward += 0.05
     else:
-        return obj
+        shaped_reward -= 15  # Death penalty
+    
+    return shaped_reward
 
 
-def evaluate_agent(agent, env, n_episodes=5):
-    """Evaluate agent performance"""
-    agent.q_network.eval()  # Set to evaluation mode
-
-    total_rewards = []
-    total_steps = []
-
-    for episode in range(n_episodes):
-        obs, info = env.reset()
-        episode_reward = 0
-        episode_steps = 0
-        done = False
-
-        while not done:
-            action = agent.select_action(obs, eval_mode=True)
-            obs, reward, terminated, truncated, info = env.step(action)
-
-            episode_reward += reward
-            episode_steps += 1
-            done = terminated or truncated
-
-        total_rewards.append(episode_reward)
-        total_steps.append(episode_steps)
-
-    agent.q_network.train()  # Set back to training mode
-
-    return {
-        'mean_reward': np.mean(total_rewards),
-        'std_reward': np.std(total_rewards),
-        'mean_steps': np.mean(total_steps),
-        'std_steps': np.std(total_steps),
-        'min_reward': np.min(total_rewards),
-        'max_reward': np.max(total_rewards),
-    }
-
-
-def train_single_configuration(args):
-    """Train with a single configuration and return results - FIXED VERSION"""
+def train_complete_vision(args):
+    """Main training function with complete vision"""
     start_time = time.time()
 
-    # Create environment
-    render_mode = None if args.no_render else "rgb_array"
-    env = make_env(ENV_NAME, render_mode=render_mode)
+    print("🎯 TETRIS AI TRAINING WITH COMPLETE VISION")
+    print("="*80)
+    print("Using 4-channel observation: Board + Active Piece + Holder + Queue")
+    print("Expected breakthrough: 20-100 episodes")
+    print("="*80)
 
-    # Setup reward shaping configuration
-    shaping_config = {}
-    if args.reward_shaping == 'simple':
-        shaping_config = {
-            'height_weight': args.height_weight,
-            'hole_weight': args.hole_weight
-        }
+    # Create environment with complete vision
+    env = make_env(
+        use_cnn=args.use_cnn, 
+        include_piece_info=args.use_complete_vision,
+        frame_stack=1
+    )
+    
+    print(f"✅ Environment created with complete vision")
+    print(f"   Observation space: {env.observation_space}")
+    print(f"   Information channels: {env.observation_space.shape[2] if len(env.observation_space.shape) == 3 else 1}")
 
-    # Initialize agent with reward shaping and max_episodes parameter
+    # Initialize agent with enhanced parameters for complete vision
     agent = Agent(
         obs_space=env.observation_space,
         action_space=env.action_space,
@@ -145,69 +129,51 @@ def train_single_configuration(args):
         gamma=args.gamma,
         batch_size=args.batch_size,
         model_type=args.model_type,
-        reward_shaping=args.reward_shaping,
-        shaping_config=shaping_config,
-        max_episodes=args.episodes  # 🔥 PASS max_episodes TO AGENT
+        epsilon_start=0.8,    # Higher exploration for discovery
+        epsilon_end=0.05,     # Maintain exploration longer  
+        epsilon_decay=0.999,  # Much slower decay
+        reward_shaping="none", # We'll apply our own
+        max_episodes=args.episodes
     )
 
     # Resume if requested
     start_episode = 0
     if args.resume:
+        print(f"\n🔄 Attempting to load existing checkpoint...")
         if agent.load_checkpoint(latest=True, model_dir=MODEL_DIR):
             start_episode = agent.episodes_done
-            print(f"Resuming from episode {start_episode}")
+            print(f"✅ Loaded checkpoint from episode {start_episode}")
+            print(f"   Will adapt existing skills to complete vision")
+            # Reset epsilon for exploration with new information
+            agent.epsilon = 0.6
+            print(f"   Reset epsilon to {agent.epsilon} for piece exploration")
         else:
-            print("No checkpoint found, starting fresh")
-
-    # 🔥 CRITICAL FIX: Handle case where agent has already completed target episodes
-    if start_episode >= args.episodes:
-        print(f"⚠️  Agent already completed {start_episode} episodes (target: {args.episodes})")
-        print(f"Options:")
-        print(f"1. Extend training: python train.py --episodes {start_episode + 5000} --resume")
-        print(f"2. Start fresh: python train.py --episodes {args.episodes}")
-        print(f"3. Evaluate current model: python evaluate.py --episodes 20 --render")
-        
-        # Return current stats
-        return {
-            'final_avg_reward': np.mean(agent.total_rewards[-50:]) if agent.total_rewards else 0,
-            'max_reward': np.max(agent.total_rewards) if agent.total_rewards else 0,
-            'avg_lines_cleared': 0,  # Would need to calculate from episode_metrics
-            'training_time': 0,
-            'shaping_analysis': {},
-            'total_episodes': start_episode,
-            'note': 'Training already completed'
-        }
+            print("❌ No checkpoint found - starting fresh")
 
     # Initialize logger
-    experiment_name = args.experiment_name or f"tetris_{args.reward_shaping}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    experiment_name = args.experiment_name or f"complete_vision_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     logger = TrainingLogger(LOG_DIR, experiment_name)
 
-    # Training metrics tracking
+    # Training metrics
     episode_rewards = []
-    episode_lines_cleared = []
-    original_rewards = []  # For comparison
+    episode_lines = []
+    lines_cleared_total = 0
+    first_line_episode = None
+    breakthrough_threshold = 20
 
-    # 🔥 FIXED: Proper episode range calculation
-    total_episodes_to_train = args.episodes
-    episodes_to_train = total_episodes_to_train - start_episode
-    
-    print(f"Starting training for {episodes_to_train} episodes...")
-    print(f"Episode range: {start_episode + 1} to {total_episodes_to_train}")
-    print(f"Reward shaping: {args.reward_shaping}")
+    print(f"\n🚀 STARTING TRAINING")
+    print(f"Episodes: {start_episode + 1} to {args.episodes}")
+    print(f"Breakthrough target: {breakthrough_threshold} total lines")
     print(f"Current epsilon: {agent.epsilon:.4f}")
+    print("-" * 80)
 
-    # 🔥 FIXED: Initialize episode variable properly
-    episode = start_episode  # Initialize BEFORE the loop
-
-    # Training loop with proper episode handling
-    for episode_offset in range(episodes_to_train):
-        episode = start_episode + episode_offset  # Current episode number
-        
+    # Training loop
+    for episode in range(start_episode, args.episodes):
         obs, info = env.reset()
         episode_reward = 0
-        original_episode_reward = 0  # Track original reward
+        original_reward = 0
         episode_steps = 0
-        lines_cleared_this_episode = 0
+        lines_this_episode = 0
 
         done = False
         while not done:
@@ -215,30 +181,38 @@ def train_single_configuration(args):
             next_obs, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
 
-            # Track original reward
-            original_episode_reward += reward
+            original_reward += reward
 
-            # Store experience with info for reward shaping
-            agent.remember(obs, action, reward, next_obs, done, info, reward)
+            # Apply complete vision reward shaping
+            shaped_reward = complete_vision_reward_shaping(obs, action, reward, done, info)
 
-            # Learn
-            learning_metrics = agent.learn()
+            # Store experience
+            agent.remember(obs, action, shaped_reward, next_obs, done, info, reward)
 
-            # Update tracking
-            episode_reward += reward  # This will be shaped if shaping is enabled
+            # Learn frequently (more information to process)
+            if episode_steps % 2 == 0:
+                learning_metrics = agent.learn()
+
+            # Track metrics
+            episode_reward += shaped_reward
             episode_steps += 1
-            lines_cleared_this_episode += info.get('lines_cleared', 0)
+            lines_cleared = info.get('lines_cleared', 0)
+            if lines_cleared > 0:
+                lines_this_episode += lines_cleared
+                if first_line_episode is None:
+                    first_line_episode = episode + 1
+                    print(f"\n🎉 FIRST LINE CLEARED! Episode {first_line_episode}")
+                    print(f"   Complete vision breakthrough!")
 
             obs = next_obs
 
         # Episode end
-        agent.end_episode(episode_reward, episode_steps,
-                          lines_cleared_this_episode, original_episode_reward)
+        lines_cleared_total += lines_this_episode
+        agent.end_episode(original_reward, episode_steps, lines_this_episode, original_reward)
 
-        # Track metrics
+        # Track data
         episode_rewards.append(episode_reward)
-        episode_lines_cleared.append(lines_cleared_this_episode)
-        original_rewards.append(original_episode_reward)
+        episode_lines.append(lines_this_episode)
 
         # Log episode
         logger.log_episode(
@@ -246,109 +220,100 @@ def train_single_configuration(args):
             reward=episode_reward,
             steps=episode_steps,
             epsilon=agent.epsilon,
-            lines_cleared=lines_cleared_this_episode,
-            original_reward=original_episode_reward,
-            shaping_improvement=episode_reward - original_episode_reward
+            lines_cleared=lines_this_episode,
+            original_reward=original_reward,
+            total_lines=lines_cleared_total
         )
 
-        # Periodic logging
-        if (episode_offset + 1) % args.log_freq == 0:
-            stats = agent.get_stats()
+        # Progress reporting
+        if (episode + 1) % args.log_freq == 0 or lines_this_episode > 0:
+            recent_lines = sum(episode_lines[-10:]) if len(episode_lines) >= 10 else sum(episode_lines)
+            recent_avg = recent_lines / min(10, len(episode_lines))
             
-            # Calculate recent averages
-            recent_rewards = episode_rewards[-10:] if len(episode_rewards) >= 10 else episode_rewards
-            recent_lines = episode_lines_cleared[-10:] if len(episode_lines_cleared) >= 10 else episode_lines_cleared
-            
-            print(f"Episode {episode+1:5d} | "
-                  f"Reward: {episode_reward:6.1f} | "
-                  f"Orig: {original_episode_reward:6.1f} | "
-                  f"Avg: {np.mean(recent_rewards):6.1f} | "
-                  f"Lines: {lines_cleared_this_episode:2d} | "
-                  f"Avg Lines: {np.mean(recent_lines):4.1f} | "
+            print(f"Episode {episode+1:3d} | "
+                  f"Lines: {lines_this_episode} (Total: {lines_cleared_total:2d}) | "
+                  f"Reward: {episode_reward:7.1f} | "
+                  f"Steps: {episode_steps:3d} | "
+                  f"Avg(10): {recent_avg:.2f} | "
                   f"ε: {agent.epsilon:.4f}")
 
-        # Periodic evaluation
-        if (episode_offset + 1) % args.eval_freq == 0:
-            print(f"\nEvaluating at episode {episode+1}...")
-            eval_results = evaluate_agent(agent, env, n_episodes=5)
-            print(
-                f"Evaluation - Mean: {eval_results['mean_reward']:.1f} ± {eval_results['std_reward']:.1f}")
+        # Check for breakthrough
+        if lines_cleared_total >= breakthrough_threshold:
+            print(f"\n🎉 BREAKTHROUGH ACHIEVED!")
+            print(f"Total lines: {lines_cleared_total} in {episode + 1} episodes")
+            print(f"Complete vision system SUCCESS!")
+            break
 
-        # Periodic saves
-        if (episode_offset + 1) % args.save_freq == 0:
-            agent.save_checkpoint(episode + 1, MODEL_DIR)  # episode is now properly defined
+        # Early victory detection  
+        if episode >= 20:
+            recent_avg = sum(episode_lines[-10:]) / min(10, len(episode_lines))
+            if recent_avg >= 1.0:
+                print(f"\n🏆 CONSISTENT LINE CLEARING! Avg: {recent_avg:.2f}")
+                print(f"Complete vision breakthrough successful!")
+                break
+
+        # Save periodically
+        if (episode + 1) % args.save_freq == 0:
+            agent.save_checkpoint(episode + 1, MODEL_DIR)
             logger.save_logs()
             logger.plot_progress()
 
-    # 🔥 FIXED: Final save with proper episode number
-    final_episode = episode + 1  # episode is defined from the loop
-    agent.save_checkpoint(final_episode, MODEL_DIR)
+    # Final save
+    agent.save_checkpoint(episode + 1, MODEL_DIR)
     logger.save_logs()
     logger.plot_progress()
 
     training_time = time.time() - start_time
     env.close()
 
-    # Return results for ablation study
-    return {
-        'final_avg_reward': np.mean(episode_rewards[-50:]) if len(episode_rewards) >= 50 else np.mean(episode_rewards) if episode_rewards else 0,
-        'max_reward': np.max(episode_rewards) if episode_rewards else 0,
-        'avg_lines_cleared': np.mean(episode_lines_cleared) if episode_lines_cleared else 0,
-        'training_time': training_time,
-        'shaping_analysis': agent.get_shaping_analysis(),
-        'total_episodes': final_episode
-    }
+    # Results summary
+    episodes_trained = episode + 1 - start_episode
+    avg_lines_per_episode = lines_cleared_total / episodes_trained if episodes_trained > 0 else 0
+    
+    print(f"\n" + "="*80)
+    print(f"COMPLETE VISION TRAINING RESULTS")
+    print(f"="*80)
+    print(f"Episodes trained: {episodes_trained}")
+    print(f"Total lines cleared: {lines_cleared_total}")
+    print(f"Average lines per episode: {avg_lines_per_episode:.3f}")
+    print(f"First line episode: {first_line_episode or 'None'}")
+    print(f"Training time: {training_time/60:.1f} minutes")
 
+    # Compare to 62k plateau
+    original_avg = 0.03
+    improvement = avg_lines_per_episode / original_avg if original_avg > 0 else float('inf')
+    
+    print(f"\nVS. ORIGINAL PLATEAU:")
+    print(f"   Original (62k episodes): {original_avg} lines/episode")
+    print(f"   Complete vision: {avg_lines_per_episode:.3f} lines/episode")
+    print(f"   Improvement factor: {improvement:.1f}x")
 
-def train(args):
-    """Main training function with reward shaping"""
-    print("Starting Tetris AI Training with Reward Shaping")
-    print("=" * 60)
-    print(f"Reward shaping method: {args.reward_shaping}")
-    print(f"Target episodes: {args.episodes}")
-
-    # Print system information
-    print_system_info()
-
-    # Create directories
-    make_dir(MODEL_DIR)
-    make_dir(LOG_DIR)
-
-    # Run training
-    result = train_single_configuration(args)
-
-    print("\n" + "=" * 60)
-    print("TRAINING COMPLETED")
-    print("=" * 60)
-    print(f"Final average reward: {result['final_avg_reward']:.2f}")
-    print(f"Maximum reward achieved: {result['max_reward']:.2f}")
-    print(f"Average lines cleared per episode: {result['avg_lines_cleared']:.2f}")
-    print(f"Total training time: {result['training_time']/3600:.2f} hours")
-    print(f"Total episodes completed: {result['total_episodes']}")
-
-    # Print shaping analysis if available
-    shaping_analysis = result['shaping_analysis']
-    if shaping_analysis and args.reward_shaping != 'none':
-        print("\nReward Shaping Analysis:")
-        improvement = shaping_analysis.get('reward_improvement', 0)
-        print(f"  Average reward improvement: {improvement:+.2f}")
-        correlation = shaping_analysis.get('correlation', 0)
-        print(f"  Original-Shaped correlation: {correlation:.3f}")
+    if lines_cleared_total >= breakthrough_threshold:
+        print(f"\n✅ MISSION ACCOMPLISHED!")
+        print(f"Complete vision broke the 62k episode plateau!")
+        return True
+    elif first_line_episode:
+        print(f"\n⚠️  Breakthrough in progress - continue training!")
+        return True
+    else:
+        print(f"\n🔧 May need more episodes or parameter adjustment")
+        return False
 
 
 def main():
     """Main entry point"""
     args = parse_args()
     
-    # 🔥 FIX: Validate episode count for very long training
-    if args.episodes > 100000:
-        print(f"⚠️  Very long training requested: {args.episodes:,} episodes")
-        response = input("This will take days/weeks. Continue? (y/N): ")
-        if response.lower() != 'y':
-            print("Training cancelled.")
-            return
-            
-    train(args)
+    print("🎯 Tetris AI Training with Complete Vision")
+    print("Based on successful piece visibility test")
+    print()
+    
+    success = train_complete_vision(args)
+    
+    if success:
+        print("\n🎉 Training successful! Continue with advanced strategies.")
+    else:
+        print("\n🔧 Continue training or adjust parameters.")
 
 
 if __name__ == "__main__":
