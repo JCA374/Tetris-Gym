@@ -108,7 +108,7 @@ def complete_vision_breakthrough():
     # Training metrics
     lines_cleared_total = 0
     first_line_episode = None
-    episodes_to_train = 200  # Should be more than enough!
+    episodes_to_train = 9000  # Should be more than enough!
     start_episode = agent.episodes_done
     
     print(f"\n🎯 Training with complete vision...")
