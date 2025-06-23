@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """
-train_complete_vision.py
-
-Updated version of your existing train.py to use complete vision
-Just replace your train.py with this content and run: python train.py
+train.py - Updated for Complete Vision
+Key changes: Proper reward shaping modes including positive_reward_shaping
 """
 
 from config import make_env, ENV_NAME, LR, GAMMA, BATCH_SIZE, MAX_EPISODES, MODEL_DIR, LOG_DIR
@@ -16,8 +14,6 @@ import time
 import json
 import numpy as np
 from datetime import datetime
-from tqdm import tqdm
-import torch
 
 # Add src to path for imports
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
@@ -25,25 +21,34 @@ sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 
 def parse_args():
     """Parse training arguments"""
-    parser = argparse.ArgumentParser(description='Train Tetris AI with Complete Vision')
+    parser = argparse.ArgumentParser(
+        description='Train Tetris AI with Complete Vision')
 
     parser.add_argument('--episodes', type=int, default=500,
                         help='Number of episodes to train (default: 500)')
     parser.add_argument('--lr', type=float, default=5e-4,
-                        help='Learning rate (default: 5e-4, higher for richer info)')
+                        help='Learning rate (default: 5e-4)')
     parser.add_argument('--batch_size', type=int, default=BATCH_SIZE,
                         help=f'Batch size (default: {BATCH_SIZE})')
     parser.add_argument('--gamma', type=float, default=GAMMA,
                         help=f'Discount factor (default: {GAMMA})')
     parser.add_argument('--model_type', type=str, default='dqn', choices=['dqn', 'dueling_dqn'],
                         help='Model architecture type')
-    
-    # Complete vision specific options
+
+    # Complete vision options
     parser.add_argument('--use_complete_vision', action='store_true', default=True,
-                        help='Use complete 4-channel vision (recommended)')
+                        help='Use complete 4-channel vision (REQUIRED for success)')
     parser.add_argument('--use_cnn', action='store_true', default=True,
-                        help='Use CNN processing for spatial relationships')
-    
+                        help='Use CNN processing')
+
+    # Epsilon settings for fresh training
+    parser.add_argument('--epsilon_start', type=float, default=0.8,
+                        help='Starting epsilon for exploration (default: 0.8)')
+    parser.add_argument('--epsilon_end', type=float, default=0.05,
+                        help='Final epsilon (default: 0.05)')
+    parser.add_argument('--epsilon_decay', type=float, default=0.999,
+                        help='Epsilon decay rate (default: 0.999)')
+
     # Training control
     parser.add_argument('--resume', action='store_true',
                         help='Resume training from latest checkpoint')
@@ -54,74 +59,101 @@ def parse_args():
     parser.add_argument('--experiment_name', type=str, default=None,
                         help='Name for this experiment')
 
+    # Reward shaping mode
+    parser.add_argument('--reward_shaping', type=str, default='complete',
+                        choices=['none', 'complete', 'positive'],
+                        help='Type of reward shaping: none (raw), complete (complete vision shaping), positive (positive reinforcement)')
     return parser.parse_args()
 
 
 def complete_vision_reward_shaping(obs, action, base_reward, done, info):
-    """Enhanced reward shaping using complete 4-channel observation"""
+    """
+    Reward shaping optimized for complete vision training
+    CRITICAL: Line clearing must dominate survival rewards!
+    """
     shaped_reward = base_reward
-    
-    # Extract information from 4-channel observation if available
+
+    # Extract channels if available
     if len(obs.shape) == 3 and obs.shape[2] >= 2:
         board_channel = obs[:, :, 0]
         active_channel = obs[:, :, 1]
-        
-        # Active piece awareness bonuses
-        active_piece_pixels = np.sum(active_channel > 0.01)
-        if active_piece_pixels > 0:
-            # Small bonus for visible active piece
-            shaped_reward += 0.1
-            
-            # Height-based placement incentive
-            active_rows = np.any(active_channel > 0.01, axis=1)
-            if np.any(active_rows):
-                lowest_piece_row = np.max(np.where(active_rows)[0])
-                height_bonus = (24 - lowest_piece_row) * 0.02
-                shaped_reward += height_bonus
-    
-    # MASSIVE line clear bonuses (agent can now achieve these!)
+
+        # Active piece awareness bonus (small)
+        active_pixels = np.sum(active_channel > 0.01)
+        if active_pixels > 0:
+            shaped_reward += 0.05  # Tiny bonus for piece visibility
+
+    # MASSIVE line clear bonuses - THE CORE OBJECTIVE
     lines_cleared = info.get('lines_cleared', 0)
     if lines_cleared > 0:
-        # Exponential rewards for multiple lines
-        line_bonus = lines_cleared * 50 * (lines_cleared ** 1.2)
+        line_bonus = lines_cleared * 100 * (1.5 ** (lines_cleared - 1))
         shaped_reward += line_bonus
-        
-        # Special Tetris celebration
         if lines_cleared == 4:
-            shaped_reward += 200  # MASSIVE Tetris bonus
-            print(f"🎉 TETRIS! 4 lines cleared, bonus: +200")
-    
-    # Balanced survival vs action incentive
+            shaped_reward += 500  # HUGE Tetris bonus
+            print(f"🎉 TETRIS! +{500 + line_bonus:.0f} bonus!")
+        elif lines_cleared >= 2:
+            print(f"🎯 {lines_cleared} lines! +{line_bonus:.0f} bonus!")
+
+    # Survival bonus/penalty
     if not done:
-        shaped_reward += 0.05
+        shaped_reward += 0.01  # Tiny survival bonus
     else:
-        shaped_reward -= 15  # Death penalty
-    
+        shaped_reward -= 10    # Small death penalty
+
+    # Height penalty to encourage low placement
+    if len(obs.shape) == 3:
+        board_channel = obs[:, :, 0]
+        filled_rows = np.any(board_channel > 0.01, axis=1)
+        if np.any(filled_rows):
+            max_height = len(filled_rows) - np.argmax(filled_rows)
+            height_penalty = max_height * 0.1
+            shaped_reward -= height_penalty
+
     return shaped_reward
 
 
-def train_complete_vision(args):
-    """Main training function with complete vision"""
-    start_time = time.time()
+def positive_reward_shaping(obs, action, base_reward, done, info):
+    """Positive reinforcement approach"""
+    shaped_reward = base_reward
 
+    # Positive reward for survival
+    if not done:
+        shaped_reward += 1.0  # +1 per step
+
+    # Line clear bonuses
+    lines_cleared = info.get('lines_cleared', 0)
+    if lines_cleared > 0:
+        shaped_reward += lines_cleared * 50
+        if lines_cleared >= 4:
+            shaped_reward += 200  # extra Tetris bonus
+
+    return shaped_reward
+
+
+def train(args):
+    """Main training function with reward shaping modes"""
+    start_time = time.time()
     print("🎯 TETRIS AI TRAINING WITH COMPLETE VISION")
     print("="*80)
-    print("Using 4-channel observation: Board + Active Piece + Holder + Queue")
-    print("Expected breakthrough: 20-100 episodes")
-    print("="*80)
 
-    # Create environment with complete vision
+    if not args.use_complete_vision:
+        print("⚠️  WARNING: Complete vision disabled! This will likely fail!")
+        print("   Add --use_complete_vision flag")
+
     env = make_env(
-        use_cnn=args.use_cnn, 
-        include_piece_info=args.use_complete_vision,
-        frame_stack=1
+        use_complete_vision=args.use_complete_vision,
+        use_cnn=args.use_cnn
     )
-    
-    print(f"✅ Environment created with complete vision")
+    print(f"✅ Environment created")
     print(f"   Observation space: {env.observation_space}")
-    print(f"   Information channels: {env.observation_space.shape[2] if len(env.observation_space.shape) == 3 else 1}")
+    if len(env.observation_space.shape) == 3:
+        channels = env.observation_space.shape[-1]
+        if channels == 4:
+            print(f"   ✅ 4-channel complete vision confirmed!")
+        else:
+            print(
+                f"   ⚠️  Only {channels} channels - may be missing information!")
 
-    # Initialize agent with enhanced parameters for complete vision
     agent = Agent(
         obs_space=env.observation_space,
         action_space=env.action_space,
@@ -129,92 +161,95 @@ def train_complete_vision(args):
         gamma=args.gamma,
         batch_size=args.batch_size,
         model_type=args.model_type,
-        epsilon_start=0.8,    # Higher exploration for discovery
-        epsilon_end=0.05,     # Maintain exploration longer  
-        epsilon_decay=0.999,  # Much slower decay
-        reward_shaping="none", # We'll apply our own
+        epsilon_start=args.epsilon_start,
+        epsilon_end=args.epsilon_end,
+        epsilon_decay=args.epsilon_decay,
+        reward_shaping="none",
         max_episodes=args.episodes
     )
 
-    # Resume if requested
     start_episode = 0
     if args.resume:
-        print(f"\n🔄 Attempting to load existing checkpoint...")
+        print(f"\n🔄 Loading checkpoint...")
         if agent.load_checkpoint(latest=True, model_dir=MODEL_DIR):
             start_episode = agent.episodes_done
-            print(f"✅ Loaded checkpoint from episode {start_episode}")
-            print(f"   Will adapt existing skills to complete vision")
-            # Reset epsilon for exploration with new information
-            agent.epsilon = 0.6
-            print(f"   Reset epsilon to {agent.epsilon} for piece exploration")
+            print(f"✅ Resumed from episode {start_episode}")
+            if agent.epsilon < 0.3:
+                print(
+                    f"⚠️  Epsilon too low ({agent.epsilon:.3f}), boosting to 0.5")
+                agent.epsilon = 0.5
         else:
             print("❌ No checkpoint found - starting fresh")
 
-    # Initialize logger
     experiment_name = args.experiment_name or f"complete_vision_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     logger = TrainingLogger(LOG_DIR, experiment_name)
 
-    # Training metrics
-    episode_rewards = []
-    episode_lines = []
+    # Determine shaping function
+    if args.reward_shaping == 'complete':
+        shaper_fn = complete_vision_reward_shaping
+    elif args.reward_shaping == 'positive':
+        shaper_fn = positive_reward_shaping
+    else:
+        shaper_fn = None
+
     lines_cleared_total = 0
     first_line_episode = None
-    breakthrough_threshold = 20
+    recent_rewards = []
+    recent_lines = []
 
-    print(f"\n🚀 STARTING TRAINING")
+    print(f"\n🚀 Starting training")
     print(f"Episodes: {start_episode + 1} to {args.episodes}")
-    print(f"Breakthrough target: {breakthrough_threshold} total lines")
-    print(f"Current epsilon: {agent.epsilon:.4f}")
+    print(f"Epsilon: {agent.epsilon:.3f}")
     print("-" * 80)
 
-    # Training loop
     for episode in range(start_episode, args.episodes):
         obs, info = env.reset()
         episode_reward = 0
         original_reward = 0
         episode_steps = 0
         lines_this_episode = 0
-
         done = False
+
         while not done:
             action = agent.select_action(obs)
             next_obs, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
 
-            original_reward += reward
+            raw_reward = reward
+            if shaper_fn:
+                shaped_reward = shaper_fn(obs, action, raw_reward, done, info)
+            else:
+                shaped_reward = raw_reward
 
-            # Apply complete vision reward shaping
-            shaped_reward = complete_vision_reward_shaping(obs, action, reward, done, info)
+            original_reward += raw_reward
 
-            # Store experience
-            agent.remember(obs, action, shaped_reward, next_obs, done, info, reward)
+            agent.remember(obs, action, shaped_reward,
+                           next_obs, done, info, raw_reward)
 
-            # Learn frequently (more information to process)
-            if episode_steps % 2 == 0:
-                learning_metrics = agent.learn()
+            if episode_steps % 4 == 0 and len(agent.memory) >= agent.batch_size:
+                agent.learn()
 
-            # Track metrics
             episode_reward += shaped_reward
             episode_steps += 1
-            lines_cleared = info.get('lines_cleared', 0)
-            if lines_cleared > 0:
-                lines_this_episode += lines_cleared
+            lines = info.get('lines_cleared', 0)
+            if lines > 0:
+                lines_this_episode += lines
+                lines_cleared_total += lines
                 if first_line_episode is None:
                     first_line_episode = episode + 1
-                    print(f"\n🎉 FIRST LINE CLEARED! Episode {first_line_episode}")
-                    print(f"   Complete vision breakthrough!")
-
+                    print(
+                        f"\n🎉 FIRST LINE CLEARED! Episode {first_line_episode}")
             obs = next_obs
 
-        # Episode end
-        lines_cleared_total += lines_this_episode
-        agent.end_episode(original_reward, episode_steps, lines_this_episode, original_reward)
+        agent.end_episode(episode_reward, episode_steps,
+                          lines_this_episode, original_reward)
 
-        # Track data
-        episode_rewards.append(episode_reward)
-        episode_lines.append(lines_this_episode)
+        recent_rewards.append(episode_reward)
+        recent_lines.append(lines_this_episode)
+        if len(recent_rewards) > 100:
+            recent_rewards.pop(0)
+            recent_lines.pop(0)
 
-        # Log episode
         logger.log_episode(
             episode=episode + 1,
             reward=episode_reward,
@@ -225,95 +260,61 @@ def train_complete_vision(args):
             total_lines=lines_cleared_total
         )
 
-        # Progress reporting
         if (episode + 1) % args.log_freq == 0 or lines_this_episode > 0:
-            recent_lines = sum(episode_lines[-10:]) if len(episode_lines) >= 10 else sum(episode_lines)
-            recent_avg = recent_lines / min(10, len(episode_lines))
-            
-            print(f"Episode {episode+1:3d} | "
-                  f"Lines: {lines_this_episode} (Total: {lines_cleared_total:2d}) | "
-                  f"Reward: {episode_reward:7.1f} | "
+            avg_reward = np.mean(recent_rewards)
+            avg_lines = np.mean(recent_lines)
+            print(f"Episode {episode+1:4d} | "
+                  f"Lines: {lines_this_episode} (Total: {lines_cleared_total:3d}) | "
+                  f"Reward: {episode_reward:7.1f} (Avg: {avg_reward:6.1f}) | "
                   f"Steps: {episode_steps:3d} | "
-                  f"Avg(10): {recent_avg:.2f} | "
-                  f"ε: {agent.epsilon:.4f}")
+                  f"Lines/Ep: {avg_lines:.2f} | "
+                  f"ε: {agent.epsilon:.3f}")
 
-        # Check for breakthrough
-        if lines_cleared_total >= breakthrough_threshold:
-            print(f"\n🎉 BREAKTHROUGH ACHIEVED!")
-            print(f"Total lines: {lines_cleared_total} in {episode + 1} episodes")
-            print(f"Complete vision system SUCCESS!")
-            break
-
-        # Early victory detection  
-        if episode >= 20:
-            recent_avg = sum(episode_lines[-10:]) / min(10, len(episode_lines))
-            if recent_avg >= 1.0:
-                print(f"\n🏆 CONSISTENT LINE CLEARING! Avg: {recent_avg:.2f}")
-                print(f"Complete vision breakthrough successful!")
-                break
-
-        # Save periodically
         if (episode + 1) % args.save_freq == 0:
             agent.save_checkpoint(episode + 1, MODEL_DIR)
             logger.save_logs()
             logger.plot_progress()
 
-    # Final save
-    agent.save_checkpoint(episode + 1, MODEL_DIR)
+    training_time = time.time() - start_time
+    env.close()
+    agent.save_checkpoint(args.episodes, MODEL_DIR)
     logger.save_logs()
     logger.plot_progress()
 
-    training_time = time.time() - start_time
-    env.close()
-
-    # Results summary
-    episodes_trained = episode + 1 - start_episode
-    avg_lines_per_episode = lines_cleared_total / episodes_trained if episodes_trained > 0 else 0
-    
     print(f"\n" + "="*80)
-    print(f"COMPLETE VISION TRAINING RESULTS")
-    print(f"="*80)
-    print(f"Episodes trained: {episodes_trained}")
+    print(f"TRAINING COMPLETE")
+    print("="*80)
+    print(f"Total episodes: {args.episodes - start_episode}")
+    avg_lines_all = lines_cleared_total / \
+        (args.episodes - start_episode) if (args.episodes - start_episode) > 0 else 0
     print(f"Total lines cleared: {lines_cleared_total}")
-    print(f"Average lines per episode: {avg_lines_per_episode:.3f}")
-    print(f"First line episode: {first_line_episode or 'None'}")
+    print(f"Average lines per episode: {avg_lines_all:.3f}")
+    print(f"First line at episode: {first_line_episode or 'Never'}")
     print(f"Training time: {training_time/60:.1f} minutes")
 
-    # Compare to 62k plateau
-    original_avg = 0.03
-    improvement = avg_lines_per_episode / original_avg if original_avg > 0 else float('inf')
-    
-    print(f"\nVS. ORIGINAL PLATEAU:")
-    print(f"   Original (62k episodes): {original_avg} lines/episode")
-    print(f"   Complete vision: {avg_lines_per_episode:.3f} lines/episode")
-    print(f"   Improvement factor: {improvement:.1f}x")
-
-    if lines_cleared_total >= breakthrough_threshold:
-        print(f"\n✅ MISSION ACCOMPLISHED!")
-        print(f"Complete vision broke the 62k episode plateau!")
-        return True
-    elif first_line_episode:
-        print(f"\n⚠️  Breakthrough in progress - continue training!")
-        return True
+    if lines_cleared_total == 0:
+        print("\n⚠️  No lines cleared! Check:")
+        print("  1. Are you using --use_complete_vision?")
+        print("  2. Did you start fresh (not resume)?")
+        print("  3. Is epsilon high enough for exploration?")
+    elif avg_lines_all < 0.1:
+        print("\n⚠️  Low performance. Try:")
+        print("  1. Increase line clear rewards")
+        print("  2. Start completely fresh")
+        print("  3. Use emergency_breakthrough_complete.py")
     else:
-        print(f"\n🔧 May need more episodes or parameter adjustment")
-        return False
+        print("\n✅ Training successful!")
 
 
 def main():
     """Main entry point"""
     args = parse_args()
-    
+
     print("🎯 Tetris AI Training with Complete Vision")
-    print("Based on successful piece visibility test")
+    print("Key: The agent can now SEE the pieces it's placing!")
     print()
-    
-    success = train_complete_vision(args)
-    
-    if success:
-        print("\n🎉 Training successful! Continue with advanced strategies.")
-    else:
-        print("\n🔧 Continue training or adjust parameters.")
+
+    train(args)
 
 
 if __name__ == "__main__":
