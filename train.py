@@ -66,66 +66,44 @@ def parse_args():
     return parser.parse_args()
 
 
+# Replace any negative-heavy shaping with this:
 def complete_vision_reward_shaping(obs, action, base_reward, done, info):
-    """
-    Reward shaping optimized for complete vision training
-    CRITICAL: Line clearing must dominate survival rewards!
-    """
     shaped_reward = base_reward
 
-    # Extract channels if available
-    if len(obs.shape) == 3 and obs.shape[2] >= 2:
-        board_channel = obs[:, :, 0]
-        active_channel = obs[:, :, 1]
-
-        # Active piece awareness bonus (small)
-        active_pixels = np.sum(active_channel > 0.01)
-        if active_pixels > 0:
-            shaped_reward += 0.05  # Tiny bonus for piece visibility
-
-    # MASSIVE line clear bonuses - THE CORE OBJECTIVE
-    lines_cleared = info.get('lines_cleared', 0)
-    if lines_cleared > 0:
-        line_bonus = lines_cleared * 100 * (1.5 ** (lines_cleared - 1))
-        shaped_reward += line_bonus
-        if lines_cleared == 4:
-            shaped_reward += 500  # HUGE Tetris bonus
-            print(f"🎉 TETRIS! +{500 + line_bonus:.0f} bonus!")
-        elif lines_cleared >= 2:
-            print(f"🎯 {lines_cleared} lines! +{line_bonus:.0f} bonus!")
-
-    # Survival bonus/penalty
+    # ALWAYS positive for survival
     if not done:
-        shaped_reward += 0.01  # Tiny survival bonus
-    else:
-        shaped_reward -= 10    # Small death penalty
+        shaped_reward += 2.0  # Strong survival incentive
 
-    # Height penalty to encourage low placement
-    if len(obs.shape) == 3:
-        board_channel = obs[:, :, 0]
-        filled_rows = np.any(board_channel > 0.01, axis=1)
-        if np.any(filled_rows):
-            max_height = len(filled_rows) - np.argmax(filled_rows)
-            height_penalty = max_height * 0.1
-            shaped_reward -= height_penalty
+    # HUGE line bonuses
+    lines = info.get('lines_cleared', 0)
+    if lines > 0:
+        shaped_reward += lines * 200  # Make lines incredibly valuable
+
+    # Small death penalty
+    if done:
+        shaped_reward -= 5  # Minimal penalty
 
     return shaped_reward
 
 
+# Look in your train.py - is it still using negative rewards?
+# You need something like this:
+
 def positive_reward_shaping(obs, action, base_reward, done, info):
-    """Positive reinforcement approach"""
     shaped_reward = base_reward
 
-    # Positive reward for survival
+    # POSITIVE survival bonus (not negative!)
     if not done:
         shaped_reward += 1.0  # +1 per step
 
-    # Line clear bonuses
-    lines_cleared = info.get('lines_cleared', 0)
-    if lines_cleared > 0:
-        shaped_reward += lines_cleared * 50
-        if lines_cleared >= 4:
-            shaped_reward += 200  # extra Tetris bonus
+    # HUGE line bonuses
+    lines = info.get('lines_cleared', 0)
+    if lines > 0:
+        shaped_reward += lines * 100
+
+    # SMALL death penalty
+    if done:
+        shaped_reward -= 10  # Only -10, not -50 or -100
 
     return shaped_reward
 
