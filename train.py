@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-train.py - Updated for Complete Vision
-Key changes: Proper reward shaping modes including positive_reward_shaping
+train.py - FIXED VERSION with reward shaping always enabled
+Key fix: Reward shaping is now enabled by default and cannot be accidentally disabled
 """
 
 from config import make_env, ENV_NAME, LR, GAMMA, BATCH_SIZE, MAX_EPISODES, MODEL_DIR, LOG_DIR
@@ -46,92 +46,177 @@ def parse_args():
                         help='Starting epsilon for exploration (default: 0.8)')
     parser.add_argument('--epsilon_end', type=float, default=0.05,
                         help='Final epsilon (default: 0.05)')
-    parser.add_argument('--epsilon_decay', type=float, default=0.999,
-                        help='Epsilon decay rate (default: 0.999)')
+    parser.add_argument('--epsilon_decay', type=float, default=0.998,
+                        help='Epsilon decay rate (default: 0.998)')
 
     # Training control
     parser.add_argument('--resume', action='store_true',
                         help='Resume training from latest checkpoint')
-    parser.add_argument('--save_freq', type=int, default=25,
+    parser.add_argument('--force_fresh', action='store_true',
+                        help='Force fresh start even if checkpoint exists')
+    parser.add_argument('--save_freq', type=int, default=50,
                         help='Save model every N episodes')
-    parser.add_argument('--log_freq', type=int, default=5,
+    parser.add_argument('--log_freq', type=int, default=10,
                         help='Log progress every N episodes')
     parser.add_argument('--experiment_name', type=str, default=None,
                         help='Name for this experiment')
 
-    # Reward shaping mode
-    parser.add_argument('--reward_shaping', type=str, default='complete',
-                        choices=['none', 'complete', 'positive'],
-                        help='Type of reward shaping: none (raw), complete (complete vision shaping), positive (positive reinforcement)')
+    # Reward shaping mode - NOW DEFAULTS TO 'positive'
+    parser.add_argument('--reward_shaping', type=str, default='positive',
+                        choices=['positive', 'aggressive', 'balanced'],
+                        help='Type of reward shaping (default: positive)')
+    
     return parser.parse_args()
 
 
-# Replace any negative-heavy shaping with this:
-def complete_vision_reward_shaping(obs, action, base_reward, done, info):
+def positive_reward_shaping(obs, action, base_reward, done, info):
+    """
+    Positive reinforcement reward shaping - GUARANTEED to encourage line clearing
+    """
     shaped_reward = base_reward
-
-    # ALWAYS positive for survival
+    
+    # STRONG survival bonus (encourages playing)
     if not done:
-        shaped_reward += 2.0  # Strong survival incentive
-
-    # HUGE line bonuses
+        shaped_reward += 2.0
+    
+    # MASSIVE line clear bonuses
     lines = info.get('lines_cleared', 0)
     if lines > 0:
-        shaped_reward += lines * 200  # Make lines incredibly valuable
-
-    # Small death penalty
+        line_rewards = {
+            1: 500,     # Single line
+            2: 1500,    # Double
+            3: 3000,    # Triple  
+            4: 10000    # Tetris!!!
+        }
+        bonus = line_rewards.get(lines, lines * 500)
+        shaped_reward += bonus
+        
+        # Print celebration for line clears
+        if lines == 1:
+            print(f"  🎯 LINE CLEARED! +{bonus} bonus")
+        elif lines == 2:
+            print(f"  🎯🎯 DOUBLE! +{bonus} bonus")
+        elif lines == 3:
+            print(f"  🎯🎯🎯 TRIPLE! +{bonus} bonus")
+        elif lines == 4:
+            print(f"  🎯🎯🎯🎯 TETRIS!!! +{bonus} bonus")
+    
+    # SMALL death penalty
     if done:
-        shaped_reward -= 5  # Minimal penalty
-
+        shaped_reward -= 10
+    
     return shaped_reward
 
 
-# Look in your train.py - is it still using negative rewards?
-# You need something like this:
-
-def positive_reward_shaping(obs, action, base_reward, done, info):
+def aggressive_reward_shaping(obs, action, base_reward, done, info):
+    """
+    Even more aggressive shaping for stubborn learning
+    """
     shaped_reward = base_reward
-
-    # POSITIVE survival bonus (not negative!)
+    
+    # Very strong survival
     if not done:
-        shaped_reward += 1.0  # +1 per step
-
-    # HUGE line bonuses
+        shaped_reward += 3.0
+    
+    # ASTRONOMICAL line bonuses
     lines = info.get('lines_cleared', 0)
     if lines > 0:
-        shaped_reward += lines * 100
-
-    # SMALL death penalty
+        line_rewards = {
+            1: 1000,
+            2: 3000,
+            3: 6000,
+            4: 20000
+        }
+        bonus = line_rewards.get(lines, lines * 1000)
+        shaped_reward += bonus
+        print(f"  🔥 {lines} LINES! +{bonus} MEGA BONUS!")
+    
+    # Encourage low board height
+    if len(obs.shape) == 3 and obs.shape[2] >= 1:
+        board_channel = obs[:, :, 0]
+        filled_rows = np.any(board_channel > 0.01, axis=1)
+        if np.any(filled_rows):
+            first_filled = np.argmax(filled_rows)
+            empty_rows = first_filled
+            if empty_rows > 10:
+                shaped_reward += (empty_rows - 10) * 0.5
+    
+    # Tiny death penalty
     if done:
-        shaped_reward -= 10  # Only -10, not -50 or -100
+        shaped_reward -= 5
+    
+    return shaped_reward
 
+
+def balanced_reward_shaping(obs, action, base_reward, done, info):
+    """
+    Balanced approach between survival and line clearing
+    """
+    shaped_reward = base_reward
+    
+    # Moderate survival bonus
+    if not done:
+        shaped_reward += 1.5
+    
+    # Strong line bonuses
+    lines = info.get('lines_cleared', 0)
+    if lines > 0:
+        line_rewards = {
+            1: 300,
+            2: 1000,
+            3: 2000,
+            4: 5000
+        }
+        bonus = line_rewards.get(lines, lines * 300)
+        shaped_reward += bonus
+        print(f"  ✨ {lines} lines cleared! +{bonus}")
+    
+    # Small penalties for dangerous heights
+    if len(obs.shape) == 3 and obs.shape[2] >= 1:
+        board_channel = obs[:, :, 0]
+        filled_rows = np.any(board_channel > 0.01, axis=1)
+        if np.any(filled_rows):
+            first_filled = np.argmax(filled_rows)
+            height = len(filled_rows) - first_filled
+            if height > 15:
+                shaped_reward -= (height - 15) * 0.3
+    
+    # Small death penalty
+    if done:
+        shaped_reward -= 15
+    
     return shaped_reward
 
 
 def train(args):
-    """Main training function with reward shaping modes"""
+    """Main training function with reward shaping ALWAYS enabled"""
     start_time = time.time()
-    print("🎯 TETRIS AI TRAINING WITH COMPLETE VISION")
+    print("🎯 TETRIS AI TRAINING - FIXED VERSION")
+    print("="*80)
+    print("✅ Reward shaping: ENABLED by default")
+    print(f"✅ Shaping mode: {args.reward_shaping}")
     print("="*80)
 
     if not args.use_complete_vision:
         print("⚠️  WARNING: Complete vision disabled! This will likely fail!")
         print("   Add --use_complete_vision flag")
 
+    # Create environment
     env = make_env(
         use_complete_vision=args.use_complete_vision,
         use_cnn=args.use_cnn
     )
     print(f"✅ Environment created")
     print(f"   Observation space: {env.observation_space}")
+    
     if len(env.observation_space.shape) == 3:
         channels = env.observation_space.shape[-1]
         if channels == 4:
             print(f"   ✅ 4-channel complete vision confirmed!")
         else:
-            print(
-                f"   ⚠️  Only {channels} channels - may be missing information!")
+            print(f"   ⚠️  Only {channels} channels - may be missing information!")
 
+    # Create agent
     agent = Agent(
         obs_space=env.observation_space,
         action_space=env.action_space,
@@ -142,44 +227,59 @@ def train(args):
         epsilon_start=args.epsilon_start,
         epsilon_end=args.epsilon_end,
         epsilon_decay=args.epsilon_decay,
-        reward_shaping="none",
+        reward_shaping="none",  # We handle shaping in train.py
         max_episodes=args.episodes
     )
 
+    # Handle resume/fresh start
     start_episode = 0
-    if args.resume:
-        print(f"\n🔄 Loading checkpoint...")
+    if args.force_fresh:
+        print("🆕 Forcing fresh start (ignoring any checkpoints)")
+    elif args.resume:
+        print(f"\n🔄 Attempting to load checkpoint...")
         if agent.load_checkpoint(latest=True, model_dir=MODEL_DIR):
             start_episode = agent.episodes_done
             print(f"✅ Resumed from episode {start_episode}")
+            
+            # Force higher epsilon for exploration with new shaping
             if agent.epsilon < 0.3:
-                print(
-                    f"⚠️  Epsilon too low ({agent.epsilon:.3f}), boosting to 0.5")
+                print(f"⚠️  Epsilon too low ({agent.epsilon:.3f}), boosting to 0.5")
                 agent.epsilon = 0.5
         else:
             print("❌ No checkpoint found - starting fresh")
+    else:
+        print("🆕 Starting fresh training")
 
-    experiment_name = args.experiment_name or f"complete_vision_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    # Setup experiment logging
+    experiment_name = args.experiment_name or f"fixed_training_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     logger = TrainingLogger(LOG_DIR, experiment_name)
 
-    # Determine shaping function
-    if args.reward_shaping == 'complete':
-        shaper_fn = complete_vision_reward_shaping
-    elif args.reward_shaping == 'positive':
-        shaper_fn = positive_reward_shaping
-    else:
-        shaper_fn = None
+    # Select reward shaping function (ALWAYS enabled!)
+    shaping_functions = {
+        'positive': positive_reward_shaping,
+        'aggressive': aggressive_reward_shaping,
+        'balanced': balanced_reward_shaping
+    }
+    shaper_fn = shaping_functions[args.reward_shaping]
+    
+    print(f"✅ Reward shaping function: {args.reward_shaping}")
+    print(f"   Survival bonus: +2.0 per step")
+    print(f"   Line bonuses: 500-10000 depending on type")
+    print(f"   Death penalty: -10")
 
+    # Training metrics
     lines_cleared_total = 0
     first_line_episode = None
     recent_rewards = []
     recent_lines = []
+    recent_steps = []
 
     print(f"\n🚀 Starting training")
     print(f"Episodes: {start_episode + 1} to {args.episodes}")
     print(f"Epsilon: {agent.epsilon:.3f}")
     print("-" * 80)
 
+    # MAIN TRAINING LOOP
     for episode in range(start_episode, args.episodes):
         obs, info = env.reset()
         episode_reward = 0
@@ -189,45 +289,55 @@ def train(args):
         done = False
 
         while not done:
+            # Select action
             action = agent.select_action(obs)
+            
+            # Step environment
             next_obs, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
 
+            # Store raw reward
             raw_reward = reward
-            if shaper_fn:
-                shaped_reward = shaper_fn(obs, action, raw_reward, done, info)
-            else:
-                shaped_reward = raw_reward
-
             original_reward += raw_reward
+            
+            # ✅ ALWAYS APPLY REWARD SHAPING (this is the fix!)
+            shaped_reward = shaper_fn(obs, action, raw_reward, done, info)
 
-            agent.remember(obs, action, shaped_reward,
-                           next_obs, done, info, raw_reward)
+            # Store experience with shaped reward
+            agent.remember(obs, action, shaped_reward, next_obs, done, info, raw_reward)
 
+            # Learn every 4 steps
             if episode_steps % 4 == 0 and len(agent.memory) >= agent.batch_size:
                 agent.learn()
 
+            # Update metrics
             episode_reward += shaped_reward
             episode_steps += 1
+            
+            # Track line clears
             lines = info.get('lines_cleared', 0)
             if lines > 0:
                 lines_this_episode += lines
                 lines_cleared_total += lines
                 if first_line_episode is None:
                     first_line_episode = episode + 1
-                    print(
-                        f"\n🎉 FIRST LINE CLEARED! Episode {first_line_episode}")
+                    print(f"\n🎉🎉🎉 FIRST LINE CLEARED! Episode {first_line_episode} 🎉🎉🎉\n")
+            
             obs = next_obs
 
-        agent.end_episode(episode_reward, episode_steps,
-                          lines_this_episode, original_reward)
+        # Episode complete
+        agent.end_episode(episode_reward, episode_steps, lines_this_episode, original_reward)
 
+        # Track recent performance
         recent_rewards.append(episode_reward)
         recent_lines.append(lines_this_episode)
+        recent_steps.append(episode_steps)
         if len(recent_rewards) > 100:
             recent_rewards.pop(0)
             recent_lines.pop(0)
+            recent_steps.pop(0)
 
+        # Log episode data
         logger.log_episode(
             episode=episode + 1,
             reward=episode_reward,
@@ -235,61 +345,90 @@ def train(args):
             epsilon=agent.epsilon,
             lines_cleared=lines_this_episode,
             original_reward=original_reward,
-            total_lines=lines_cleared_total
+            total_lines=lines_cleared_total,
+            shaped_reward_used=True  # Always true now!
         )
 
+        # Print progress
         if (episode + 1) % args.log_freq == 0 or lines_this_episode > 0:
             avg_reward = np.mean(recent_rewards)
             avg_lines = np.mean(recent_lines)
+            avg_steps = np.mean(recent_steps)
+            
             print(f"Episode {episode+1:4d} | "
                   f"Lines: {lines_this_episode} (Total: {lines_cleared_total:3d}) | "
                   f"Reward: {episode_reward:7.1f} (Avg: {avg_reward:6.1f}) | "
-                  f"Steps: {episode_steps:3d} | "
+                  f"Steps: {episode_steps:3d} (Avg: {avg_steps:4.1f}) | "
                   f"Lines/Ep: {avg_lines:.2f} | "
-                  f"ε: {agent.epsilon:.3f}")
+                  f"ε: {agent.epsilon:.3f} | "
+                  f"Shaping: YES")
 
+        # Save checkpoint periodically
         if (episode + 1) % args.save_freq == 0:
             agent.save_checkpoint(episode + 1, MODEL_DIR)
             logger.save_logs()
             logger.plot_progress()
+            print(f"💾 Checkpoint saved at episode {episode + 1}")
 
+    # Training complete
     training_time = time.time() - start_time
     env.close()
+    
+    # Save final checkpoint
     agent.save_checkpoint(args.episodes, MODEL_DIR)
     logger.save_logs()
     logger.plot_progress()
 
+    # Print final summary
     print(f"\n" + "="*80)
     print(f"TRAINING COMPLETE")
     print("="*80)
-    print(f"Total episodes: {args.episodes - start_episode}")
-    avg_lines_all = lines_cleared_total / \
-        (args.episodes - start_episode) if (args.episodes - start_episode) > 0 else 0
+    episodes_trained = args.episodes - start_episode
+    print(f"Total episodes: {episodes_trained}")
     print(f"Total lines cleared: {lines_cleared_total}")
-    print(f"Average lines per episode: {avg_lines_all:.3f}")
+    
+    if episodes_trained > 0:
+        avg_lines_all = lines_cleared_total / episodes_trained
+        print(f"Average lines per episode: {avg_lines_all:.3f}")
+    
     print(f"First line at episode: {first_line_episode or 'Never'}")
     print(f"Training time: {training_time/60:.1f} minutes")
+    
+    if len(recent_rewards) > 0:
+        print(f"\nRecent performance (last {len(recent_rewards)} episodes):")
+        print(f"  Average reward: {np.mean(recent_rewards):.1f}")
+        print(f"  Average steps: {np.mean(recent_steps):.1f}")
+        print(f"  Average lines/episode: {np.mean(recent_lines):.3f}")
 
+    # Provide feedback
     if lines_cleared_total == 0:
-        print("\n⚠️  No lines cleared! Check:")
-        print("  1. Are you using --use_complete_vision?")
-        print("  2. Did you start fresh (not resume)?")
-        print("  3. Is epsilon high enough for exploration?")
-    elif avg_lines_all < 0.1:
-        print("\n⚠️  Low performance. Try:")
-        print("  1. Increase line clear rewards")
-        print("  2. Start completely fresh")
-        print("  3. Use emergency_breakthrough_complete.py")
+        print("\n⚠️  No lines cleared! This shouldn't happen with reward shaping.")
+        print("  Check:")
+        print("  1. Is complete vision enabled? (should see '4-channel' above)")
+        print("  2. Did epsilon stay high enough? (should be 0.5-0.8 initially)")
+        print("  3. Run for more episodes (try 1000+)")
+    elif lines_cleared_total < episodes_trained * 0.1:
+        print("\n⚠️  Low line clearing rate. Try:")
+        print("  1. Use --reward_shaping aggressive")
+        print("  2. Train for more episodes (2000+)")
+        print("  3. Start completely fresh with --force_fresh")
     else:
         print("\n✅ Training successful!")
+        print(f"  Line clearing rate: {lines_cleared_total/episodes_trained:.2f} lines/episode")
+        print("  Continue training for better performance!")
+
+    print("\n" + "="*80)
 
 
 def main():
     """Main entry point"""
     args = parse_args()
 
-    print("🎯 Tetris AI Training with Complete Vision")
-    print("Key: The agent can now SEE the pieces it's placing!")
+    print("🎯 Tetris AI Training - FIXED VERSION")
+    print("Key fixes:")
+    print("  ✅ Reward shaping always enabled")
+    print("  ✅ Strong line clear bonuses (500-10000)")
+    print("  ✅ Positive survival rewards (+2.0 per step)")
     print()
 
     train(args)
