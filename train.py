@@ -107,18 +107,16 @@ def positive_reward_shaping(obs, action, base_reward, done, info):
     
     return shaped_reward
 
-
 def aggressive_reward_shaping(obs, action, base_reward, done, info):
     """
-    Even more aggressive shaping for stubborn learning
+    NO SURVIVAL BONUS - only line clearing matters!
     """
-    shaped_reward = base_reward
+    shaped_reward = 0  # Start at ZERO
     
-    # Very strong survival
-    if not done:
-        shaped_reward += 3.0
+    # NO SURVIVAL BONUS
+    # (Agent must clear lines to get reward!)
     
-    # ASTRONOMICAL line bonuses
+    # HUGE line bonuses - THE ONLY WAY TO GET REWARD
     lines = info.get('lines_cleared', 0)
     if lines > 0:
         line_rewards = {
@@ -131,22 +129,11 @@ def aggressive_reward_shaping(obs, action, base_reward, done, info):
         shaped_reward += bonus
         print(f"  🔥 {lines} LINES! +{bonus} MEGA BONUS!")
     
-    # Encourage low board height
-    if len(obs.shape) == 3 and obs.shape[2] >= 1:
-        board_channel = obs[:, :, 0]
-        filled_rows = np.any(board_channel > 0.01, axis=1)
-        if np.any(filled_rows):
-            first_filled = np.argmax(filled_rows)
-            empty_rows = first_filled
-            if empty_rows > 10:
-                shaped_reward += (empty_rows - 10) * 0.5
-    
-    # Tiny death penalty
+    # Moderate death penalty
     if done:
-        shaped_reward -= 5
+        shaped_reward -= 50
     
     return shaped_reward
-
 
 def balanced_reward_shaping(obs, action, base_reward, done, info):
     """
