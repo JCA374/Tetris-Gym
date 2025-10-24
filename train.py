@@ -14,6 +14,11 @@ import time
 import json
 import numpy as np
 from datetime import datetime
+from src.reward_shaping import (
+    aggressive_reward_shaping,
+    positive_reward_shaping,
+    balanced_reward_shaping
+)
 
 # Add src to path for imports
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
@@ -69,110 +74,7 @@ def parse_args():
     return parser.parse_args()
 
 
-def positive_reward_shaping(obs, action, base_reward, done, info):
-    """
-    Positive reinforcement reward shaping - GUARANTEED to encourage line clearing
-    """
-    shaped_reward = base_reward
-    
-    # STRONG survival bonus (encourages playing)
-    if not done:
-        shaped_reward += 2.0
-    
-    # MASSIVE line clear bonuses
-    lines = info.get('lines_cleared', 0)
-    if lines > 0:
-        line_rewards = {
-            1: 500,     # Single line
-            2: 1500,    # Double
-            3: 3000,    # Triple  
-            4: 10000    # Tetris!!!
-        }
-        bonus = line_rewards.get(lines, lines * 500)
-        shaped_reward += bonus
-        
-        # Print celebration for line clears
-        if lines == 1:
-            print(f"  🎯 LINE CLEARED! +{bonus} bonus")
-        elif lines == 2:
-            print(f"  🎯🎯 DOUBLE! +{bonus} bonus")
-        elif lines == 3:
-            print(f"  🎯🎯🎯 TRIPLE! +{bonus} bonus")
-        elif lines == 4:
-            print(f"  🎯🎯🎯🎯 TETRIS!!! +{bonus} bonus")
-    
-    # SMALL death penalty
-    if done:
-        shaped_reward -= 10
-    
-    return shaped_reward
 
-def aggressive_reward_shaping(obs, action, base_reward, done, info):
-    """
-    NO SURVIVAL BONUS - only line clearing matters!
-    """
-    shaped_reward = 0  # Start at ZERO
-    
-    # NO SURVIVAL BONUS
-    # (Agent must clear lines to get reward!)
-    
-    # HUGE line bonuses - THE ONLY WAY TO GET REWARD
-    lines = info.get('lines_cleared', 0)
-    if lines > 0:
-        line_rewards = {
-            1: 1000,
-            2: 3000,
-            3: 6000,
-            4: 20000
-        }
-        bonus = line_rewards.get(lines, lines * 1000)
-        shaped_reward += bonus
-        print(f"  🔥 {lines} LINES! +{bonus} MEGA BONUS!")
-    
-    # Moderate death penalty
-    if done:
-        shaped_reward -= 50
-    
-    return shaped_reward
-
-def balanced_reward_shaping(obs, action, base_reward, done, info):
-    """
-    Balanced approach between survival and line clearing
-    """
-    shaped_reward = base_reward
-    
-    # Moderate survival bonus
-    if not done:
-        shaped_reward += 1.5
-    
-    # Strong line bonuses
-    lines = info.get('lines_cleared', 0)
-    if lines > 0:
-        line_rewards = {
-            1: 300,
-            2: 1000,
-            3: 2000,
-            4: 5000
-        }
-        bonus = line_rewards.get(lines, lines * 300)
-        shaped_reward += bonus
-        print(f"  ✨ {lines} lines cleared! +{bonus}")
-    
-    # Small penalties for dangerous heights
-    if len(obs.shape) == 3 and obs.shape[2] >= 1:
-        board_channel = obs[:, :, 0]
-        filled_rows = np.any(board_channel > 0.01, axis=1)
-        if np.any(filled_rows):
-            first_filled = np.argmax(filled_rows)
-            height = len(filled_rows) - first_filled
-            if height > 15:
-                shaped_reward -= (height - 15) * 0.3
-    
-    # Small death penalty
-    if done:
-        shaped_reward -= 15
-    
-    return shaped_reward
 
 
 def train(args):
