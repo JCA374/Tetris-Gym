@@ -10,6 +10,10 @@ Usage:
 
 import numpy as np
 import sys
+import os
+
+# Add parent directory to path so we can import from main project
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Import the helper functions
 try:
@@ -28,7 +32,7 @@ try:
     print("✅ Successfully imported all helper functions!")
 except ImportError as e:
     print(f"❌ Import error: {e}")
-    print("Make sure reward_shaping_UPDATED.py is in the same directory")
+    print("Make sure reward_shape.py is in the same directory")
     sys.exit(1)
 
 
@@ -249,8 +253,8 @@ def main():
     print(f"{'='*60}")
     print("\nIf you see this message, all helper functions work correctly!")
     print("\nNext steps:")
-    print("1. Copy reward_shaping_UPDATED.py to your project directory")
-    print("2. Update train.py imports (see TRAIN_UPDATE_INSTRUCTIONS.md)")
+    print("1. Your reward_shape.py file is ready to use")
+    print("2. Update train.py imports: from reward_shape import ...")
     print("3. Run training with: python train.py --reward_shaping aggressive --force_fresh")
     print()
 

@@ -51,6 +51,14 @@ def extract_board_from_obs(obs):
     # Ensure 2D
     if len(board.shape) != 2:
         return None
+    
+    # ✨ CRITICAL FIX: Normalize board values to 0-1 range
+    # Without this, board values of 0-255 cause penalties to be 100x too large!
+    if board.size > 0:
+        max_val = board.max()
+        if max_val > 1.0:
+            board = board / max_val
+            # Uncomment to debug: print(f"⚠️ Board normalized from 0-{max_val} to 0-1")
         
     return board
 
@@ -226,10 +234,10 @@ def aggressive_reward_shaping(obs, action, base_reward, done, info):
         wells = calculate_wells(board)
         
         # PENALTIES (negative rewards)
-        shaped_reward -= aggregate_height * 0.0051   # 100x smaller
-        shaped_reward -= holes * 0.035               # 100x smaller  
-        shaped_reward -= bumpiness * 0.0035          # 100x smaller
-        shaped_reward -= wells * 0.0065              # 100x smaller
+        shaped_reward -= aggregate_height * 0.51  # Penalize total height
+        shaped_reward -= holes * 3.5               # HEAVILY penalize holes
+        shaped_reward -= bumpiness * 0.35          # Penalize bumpy surface
+        shaped_reward -= wells * 0.65              # Penalize wells
         
         # Extra penalty if dangerously high
         if max_height > 15:  # More than 75% full
