@@ -226,10 +226,10 @@ def aggressive_reward_shaping(obs, action, base_reward, done, info):
         wells = calculate_wells(board)
         
         # PENALTIES (negative rewards)
-        shaped_reward -= aggregate_height * 0.51  # Penalize total height
-        shaped_reward -= holes * 3.5               # HEAVILY penalize holes
-        shaped_reward -= bumpiness * 0.35          # Penalize bumpy surface
-        shaped_reward -= wells * 0.65              # Penalize wells
+        shaped_reward -= aggregate_height * 0.0051   # 100x smaller
+        shaped_reward -= holes * 0.035               # 100x smaller  
+        shaped_reward -= bumpiness * 0.0035          # 100x smaller
+        shaped_reward -= wells * 0.0065              # 100x smaller
         
         # Extra penalty if dangerously high
         if max_height > 15:  # More than 75% full

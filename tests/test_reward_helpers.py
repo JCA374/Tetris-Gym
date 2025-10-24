@@ -13,7 +13,7 @@ import sys
 
 # Import the helper functions
 try:
-    from reward_shaping_UPDATED import (
+    from src.reward_shaping import (
         get_column_heights,
         calculate_aggregate_height,
         count_holes,
