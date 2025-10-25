@@ -218,6 +218,43 @@ def get_max_height(board):
     heights = get_column_heights(board)
     return max(heights) if heights else 0
 
+def calculate_horizontal_distribution(board):
+    """
+    Reward spreading pieces horizontally across columns
+    
+    This encourages the agent to move pieces LEFT/RIGHT before dropping,
+    preventing the vertical stacking problem where pieces stack in same columns.
+    
+    Returns:
+        float: Reward based on how evenly pieces are distributed horizontally
+    """
+    if board is None:
+        return 0.0
+    
+    heights = get_column_heights(board)
+    
+    # 1. Reward even distribution (low variance is good)
+    height_variance = np.var(heights)
+    evenness_reward = -height_variance * 0.2
+    
+    # 2. Count filled cells in each column
+    column_fullness = [np.count_nonzero(board[:, i]) for i in range(board.shape[1])]
+    
+    # 3. Penalize concentration in few columns
+    concentration = np.std(column_fullness)
+    concentration_penalty = -concentration * 0.3
+    
+    # 4. Reward using full width of board
+    empty_columns = sum(1 for h in heights if h == 0)
+    empty_penalty = -empty_columns * 0.2
+    
+    # 5. Bonus for spreading pieces across columns
+    columns_used = sum(1 for h in heights if h > 0)
+    spread_bonus = (columns_used / 10.0) * 0.5  # Reward using all 10 columns
+    
+    total_reward = evenness_reward + concentration_penalty + empty_penalty + spread_bonus
+    
+    return total_reward
 
 def count_complete_lines(board, prev_board=None):
     """

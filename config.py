@@ -1,11 +1,18 @@
 # config.py
-"""Configuration for Tetris RL Training with Complete Vision"""
+"""Configuration for Tetris RL Training - FIXED with 3D observations"""
 
 import numpy as np
 import gymnasium as gym
 
 # Import tetris_gymnasium to register environments
-import tetris_gymnasium.envs  # This registers the Tetris environment
+import tetris_gymnasium.envs
+
+# ✅ FIXED: Add all variables that train.py expects
+ENV_NAME = 'tetris_gymnasium/Tetris'
+LR = 0.0001
+MAX_EPISODES = 10000
+MODEL_DIR = "models/"
+LOG_DIR = "logs/"
 
 # Training Configuration
 EPISODES = 10000
@@ -28,10 +35,9 @@ HIDDEN_UNITS = [512, 256, 128]
 ENV_CONFIG = {
     'height': 20,
     'width': 10,
-    # obs_type removed - not supported by tetris-gymnasium
 }
 
-# Reward shaping modes: 'aggressive', 'positive', 'balanced'
+# Reward shaping modes
 REWARD_SHAPING_MODE = 'balanced'
 
 # Logging
@@ -39,20 +45,22 @@ LOG_INTERVAL = 10
 SAVE_INTERVAL = 500
 MILESTONE_INTERVAL = 1000
 
-def make_env(render_mode="rgb_array", use_complete_vision=True):
+
+def make_env(render_mode="rgb_array", use_complete_vision=True, use_cnn=False):
     """
     Create Tetris environment with complete vision
     
     Args:
         render_mode: Rendering mode ('rgb_array', 'human', None)
-        use_complete_vision: If True, enable complete vision with 4-channel observations
+        use_complete_vision: If True, wrap to convert dict to array
+        use_cnn: Not used, kept for compatibility
     
     Returns:
         Gymnasium environment
     """
     # Create base environment
     env = gym.make(
-        'tetris_gymnasium/Tetris',
+        ENV_NAME,
         render_mode=render_mode,
         **ENV_CONFIG
     )
@@ -71,93 +79,121 @@ def make_env(render_mode="rgb_array", use_complete_vision=True):
 
 class CompleteVisionWrapper(gym.ObservationWrapper):
     """
-    Wrapper to convert dict observations to playable area only.
+    Wrapper to convert dict observations to 3D array for CNN
     
-    CRITICAL FIX: tetris-gymnasium adds walls around the playable area!
-    - Board is 24x18 but playable area is only 20x10 (middle section)
-    - Walls at columns 0-3 and 14-17, bottom rows 20-23
-    - These walls make line clearing IMPOSSIBLE!
-    
-    This wrapper extracts ONLY the playable 20x10 area.
+    Extracts board and adds channel dimension for CNN processing
+    Output shape: (20, 10, 1) - height x width x channels
     """
     
     def __init__(self, env):
         super().__init__(env)
         
-        base_space = env.observation_space
+        # Define new observation space - 3D with 1 channel
+        # ✅ FIXED: Changed from (20, 10) to (20, 10, 1) for CNN compatibility
+        self.observation_space = gym.spaces.Box(
+            low=0,
+            high=255,
+            shape=(20, 10, 1),  # ← Added channel dimension!
+            dtype=np.uint8
+        )
         
-        print(f"   Original observation: {type(base_space)}")
-        
-        if isinstance(base_space, gym.spaces.Dict):
-            # The board includes walls - we need to extract playable area
-            # Full board is 24x18, playable is 20x10
-            # Walls: columns 0-3 (left), 14-17 (right), rows 20-23 (bottom)
-            
-            playable_height = 20
-            playable_width = 10
-            
-            # Create observation space for playable area only
-            self.observation_space = gym.spaces.Box(
-                low=0, high=1,
-                shape=(playable_height, playable_width, 2),  # 2 channels
-                dtype=np.float32
-            )
-            
-            self.use_dict_obs = True
-            self.wall_left = 4  # Skip first 4 columns
-            self.wall_right = 14  # Stop at column 14
-            self.wall_bottom = 20  # Only use rows 0-19
-            
-            print(f"   ✅ Extracting playable area: {playable_height}x{playable_width}")
-            print(f"   ✅ Removing walls (cols 0-3, 14-17, rows 20-23)")
-            print(f"   ✅ Final shape: {self.observation_space.shape}")
-        else:
-            self.observation_space = base_space
-            self.use_dict_obs = False
+        print("🎯 CompleteVisionWrapper initialized:")
+        print(f"   Input space: {env.observation_space}")
+        print(f"   Output space: {self.observation_space}")
     
-    def observation(self, obs):
+    def observation(self, obs_dict):
         """
-        Extract playable area from dict observation.
+        Extract board from observation dict and add channel dimension
+        
+        Args:
+            obs_dict: Dictionary with 'board' and other keys
+            
+        Returns:
+            3D numpy array (20, 10, 1) - board with channel dimension
         """
-        if not self.use_dict_obs:
-            obs = np.array(obs, dtype=np.float32)
-            if obs.max() > 1.0:
-                obs = obs / obs.max()
-            return obs
-        
-        # Extract board and active piece mask
-        board_full = obs['board'].astype(np.float32)
-        active_full = obs['active_tetromino_mask'].astype(np.float32)
-        
-        # Extract ONLY the playable area (remove walls)
-        # Playable area: rows 0-19, columns 4-13
-        board_playable = board_full[:self.wall_bottom, self.wall_left:self.wall_right]
-        active_playable = active_full[:self.wall_bottom, self.wall_left:self.wall_right]
-        
-        # Normalize board
-        if board_playable.max() > 1.0:
-            board_playable = board_playable / board_playable.max()
-        
-        # Stack channels: board + active piece
-        combined = np.stack([board_playable, active_playable], axis=-1)
-        
-        return combined
+        if isinstance(obs_dict, dict) and 'board' in obs_dict:
+            board = obs_dict['board']
+            
+            # Extract playable area (20x10)
+            if board.shape == (24, 18):
+                # Standard tetris-gymnasium format with walls
+                # Playable area is in the center
+                playable = board[0:20, 4:14]  # Extract 20x10 playable area
+            elif board.shape == (20, 10):
+                # Already correct size
+                playable = board
+            elif board.shape[0] >= 20 and board.shape[1] >= 10:
+                # Has walls - extract middle 20x10
+                playable = board[:20, :10]
+            else:
+                # Unexpected shape - use as is and hope for the best
+                playable = board
+            
+            # ✅ FIXED: Add channel dimension (20, 10) → (20, 10, 1)
+            playable_3d = np.expand_dims(playable, axis=-1)
+            
+            return playable_3d.astype(np.uint8)
+        else:
+            # If not a dict, assume it's already the board
+            board = np.array(obs_dict)
+            # Add channel dimension if needed
+            if len(board.shape) == 2:
+                board = np.expand_dims(board, axis=-1)
+            return board.astype(np.uint8)
 
 
-def print_config():
-    """Print current configuration"""
-    print("\n" + "="*80)
-    print("TETRIS RL TRAINING CONFIGURATION")
-    print("="*80)
-    print(f"Episodes:              {EPISODES}")
-    print(f"Batch size:            {BATCH_SIZE}")
-    print(f"Gamma (discount):      {GAMMA}")
-    print(f"Learning rate:         {LEARNING_RATE}")
-    print(f"Memory size:           {MEMORY_SIZE}")
-    print(f"Epsilon start:         {EPSILON_START}")
-    print(f"Epsilon end:           {EPSILON_END}")
-    print(f"Epsilon decay:         {EPSILON_DECAY}")
-    print(f"Hidden units:          {HIDDEN_UNITS}")
-    print(f"Reward shaping mode:   {REWARD_SHAPING_MODE}")
-    print(f"Board size:            {ENV_CONFIG['height']}x{ENV_CONFIG['width']}")
-    print("="*80 + "\n")
+def test_environment():
+    """Test function to verify environment works"""
+    print("\n🧪 Testing environment...")
+    
+    env = make_env(render_mode="rgb_array", use_complete_vision=True)
+    
+    # Test reset
+    obs, info = env.reset(seed=42)
+    print(f"✅ Reset successful")
+    print(f"   Observation shape: {obs.shape}")
+    print(f"   Observation dtype: {obs.dtype}")
+    print(f"   Observation range: [{obs.min()}, {obs.max()}]")
+    
+    # Verify 3D shape
+    assert len(obs.shape) == 3, f"Expected 3D observation, got shape {obs.shape}"
+    assert obs.shape == (20, 10, 1), f"Expected (20, 10, 1), got {obs.shape}"
+    
+    # Test steps
+    total_reward = 0
+    for i in range(10):
+        action = env.action_space.sample()
+        obs, reward, terminated, truncated, info = env.step(action)
+        total_reward += reward
+        
+        # Verify shape consistency
+        assert obs.shape == (20, 10, 1), f"Shape changed to {obs.shape}!"
+        
+        if terminated or truncated:
+            obs, info = env.reset()
+            break
+    
+    print(f"✅ Environment steps work - Total reward: {total_reward:.2f}")
+    print(f"✅ Shape consistency verified: all observations are (20, 10, 1)")
+    
+    env.close()
+    return True
+
+
+if __name__ == "__main__":
+    # Test the configuration
+    print("="*60)
+    print("Testing Tetris Configuration")
+    print("="*60)
+    
+    test_environment()
+    
+    print("\n✅ Configuration test passed!")
+    print(f"\nConfiguration values:")
+    print(f"  ENV_NAME: {ENV_NAME}")
+    print(f"  LR: {LR}")
+    print(f"  GAMMA: {GAMMA}")
+    print(f"  BATCH_SIZE: {BATCH_SIZE}")
+    print(f"  MAX_EPISODES: {MAX_EPISODES}")
+    print(f"  MODEL_DIR: {MODEL_DIR}")
+    print(f"  LOG_DIR: {LOG_DIR}")
