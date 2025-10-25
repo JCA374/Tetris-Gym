@@ -87,6 +87,40 @@ def get_column_heights(board):
     
     return heights
 
+def calculate_horizontal_distribution(board):
+    """
+    Reward spreading pieces horizontally across columns
+    
+    This encourages the agent to move pieces LEFT/RIGHT before dropping,
+    preventing the vertical stacking problem where pieces stack in same columns.
+    """
+    if board is None:
+        return 0.0
+    
+    heights = get_column_heights(board)
+    
+    # Reward even distribution (low variance is good)
+    height_variance = np.var(heights)
+    evenness_reward = -height_variance * 0.2
+    
+    # Count filled cells in each column
+    column_fullness = [np.count_nonzero(board[:, i]) for i in range(board.shape[1])]
+    
+    # Penalize concentration in few columns
+    concentration = np.std(column_fullness)
+    concentration_penalty = -concentration * 0.3
+    
+    # Reward using full width of board
+    empty_columns = sum(1 for h in heights if h == 0)
+    empty_penalty = -empty_columns * 0.2
+    
+    # Bonus for spreading pieces
+    columns_used = sum(1 for h in heights if h > 0)
+    spread_bonus = (columns_used / 10.0) * 0.5  # Reward using all 10 columns
+    
+    total_reward = evenness_reward + concentration_penalty + empty_penalty + spread_bonus
+    
+    return total_reward
 
 def calculate_aggregate_height(board):
     """
@@ -238,6 +272,9 @@ def aggressive_reward_shaping(obs, action, base_reward, done, info):
         shaped_reward -= holes * 3.5               # HEAVILY penalize holes
         shaped_reward -= bumpiness * 0.35          # Penalize bumpy surface
         shaped_reward -= wells * 0.65              # Penalize wells
+        shaped_reward += calculate_horizontal_distribution(board) * 2.0  # ✅ FIXED: Encourage horizontal spread!
+
+
         
         # Extra penalty if dangerously high
         if max_height > 15:  # More than 75% full
@@ -289,6 +326,7 @@ def positive_reward_shaping(obs, action, base_reward, done, info):
         shaped_reward -= aggregate_height * 0.2
         shaped_reward -= holes * 2.0
         shaped_reward -= bumpiness * 0.15
+        shaped_reward += calculate_horizontal_distribution(board) * 1.5 
         
         # Danger zone penalty
         if max_height > 16:
@@ -349,6 +387,7 @@ def balanced_reward_shaping(obs, action, base_reward, done, info):
         shaped_reward -= holes * 2.5
         shaped_reward -= bumpiness * 0.25
         shaped_reward -= wells * 0.4
+        shaped_reward += calculate_horizontal_distribution(board) * 1.8  
     
     # Moderate survival bonus
     if not done:

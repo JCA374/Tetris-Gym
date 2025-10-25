@@ -1,288 +1,163 @@
-# config_complete_vision.py - REPLACE YOUR config.py WITH THIS!
+# config.py
+"""Configuration for Tetris RL Training with Complete Vision"""
 
-import gymnasium as gym
-from gymnasium.envs.registration import register
 import numpy as np
-import cv2
-from gymnasium.spaces import Box
+import gymnasium as gym
 
-# Register the Tetris environment
-try:
-    register(
-        id="TetrisComplete-v0",
-        entry_point="tetris_gymnasium.envs.tetris:Tetris",
-    )
-except gym.error.Error:
-    pass
+# Import tetris_gymnasium to register environments
+import tetris_gymnasium.envs  # This registers the Tetris environment
 
-# Environment settings
-ENV_NAME = "TetrisComplete-v0"
-RENDER_MODE = None
-FRAME_STACK = 1
-PREPROCESS = True
-
-# Training hyperparameters  
-LR = 5e-4  # Higher for richer information
+# Training Configuration
+EPISODES = 10000
+BATCH_SIZE = 64
 GAMMA = 0.99
-BATCH_SIZE = 32
-REPLAY_BUFFER_SIZE = 100000
-EPSILON_START = 0.8
+LEARNING_RATE = 0.0001
+MEMORY_SIZE = 100000
+MIN_MEMORY_SIZE = 1000
+TARGET_UPDATE_FREQUENCY = 1000
+
+# Epsilon (exploration) schedule
+EPSILON_START = 1.0
 EPSILON_END = 0.05
-EPSILON_DECAY = 0.999
-TARGET_UPDATE_FREQ = 1000
-MAX_EPISODES = 25000
+EPSILON_DECAY = 0.9999
 
-# Directories
-MODEL_DIR = "models/"
-LOG_DIR = "logs/"
+# Model architecture
+HIDDEN_UNITS = [512, 256, 128]
 
+# Environment configuration
+ENV_CONFIG = {
+    'height': 20,
+    'width': 10,
+    # obs_type removed - not supported by tetris-gymnasium
+}
 
-class CompleteTetrisObservationWrapper(gym.ObservationWrapper):
-    """Extract ALL information: board + active piece + holder + queue"""
-    
-    def __init__(self, env):
-        super().__init__(env)
-        
-        # Sample to understand structure
-        sample_obs = env.observation_space.sample()
-        
-        if not isinstance(sample_obs, dict):
-            raise ValueError("Expected dict observation space")
-            
-        # Get board dimensions
-        self.board_shape = sample_obs['board'].shape
-        self.board_h, self.board_w = self.board_shape
-        
-        # We'll create a 4-channel observation
-        self.observation_space = Box(
-            low=0, high=1, 
-            shape=(self.board_h, self.board_w, 4), 
-            dtype=np.float32
-        )
-        
-        print(f"CompleteTetrisObservationWrapper: {self.observation_space}")
-        print(f"  Channel 0: Board (obstacles)")
-        print(f"  Channel 1: Active piece") 
-        print(f"  Channel 2: Holder")
-        print(f"  Channel 3: Queue preview")
-        
-    def observation(self, obs):
-        """Create 4-channel observation with complete game state"""
-        
-        # Channel 0: Board state
-        board = obs['board'].astype(np.float32)
-        if board.max() > 1:
-            board = board / board.max()
-            
-        # Channel 1: Active tetromino (THE MISSING PIECE!)
-        active = obs.get('active_tetromino_mask', np.zeros_like(board))
-        active = active.astype(np.float32)
-        if active.max() > 1:
-            active = active / active.max()
-            
-        # Channel 2: Holder (for strategic planning)
-        holder_channel = self._process_holder(obs.get('holder', None))
-        
-        # Channel 3: Queue preview (next piece)
-        queue_channel = self._process_queue(obs.get('queue', None))
-        
-        # Stack into 4-channel observation
-        complete_obs = np.stack([board, active, holder_channel, queue_channel], axis=-1)
-        
-        return complete_obs
-    
-    def _process_holder(self, holder):
-        """Process holder into board-sized channel"""
-        holder_channel = np.zeros(self.board_shape, dtype=np.float32)
-        
-        if holder is not None and holder.size > 0:
-            # Place holder preview in top-left corner
-            h, w = min(4, self.board_h), min(4, self.board_w)
-            if holder.ndim >= 2:
-                piece_h, piece_w = holder.shape[:2]
-                h = min(h, piece_h)
-                w = min(w, piece_w)
-                holder_channel[:h, :w] = holder[:h, :w].astype(np.float32)
-            
-        return holder_channel
-    
-    def _process_queue(self, queue):
-        """Process queue into board-sized channel"""
-        queue_channel = np.zeros(self.board_shape, dtype=np.float32)
-        
-        if queue is not None and queue.size > 0:
-            # Show next piece preview on the right side
-            if queue.ndim >= 2:
-                # Handle different queue formats
-                if queue.ndim == 3 and queue.shape[0] > 0:
-                    next_piece = queue[0]  # First piece in queue
-                else:
-                    next_piece = queue
-                    
-                piece_h, piece_w = next_piece.shape[:2]
-                h = min(4, piece_h, self.board_h)
-                w = min(4, piece_w, self.board_w)
-                
-                # Place in top-right corner
-                start_col = max(0, self.board_w - w - 1)
-                queue_channel[:h, start_col:start_col+w] = next_piece[:h, :w].astype(np.float32)
-        
-        return queue_channel
+# Reward shaping modes: 'aggressive', 'positive', 'balanced'
+REWARD_SHAPING_MODE = 'balanced'
 
+# Logging
+LOG_INTERVAL = 10
+SAVE_INTERVAL = 500
+MILESTONE_INTERVAL = 1000
 
-class EnhancedCNNWrapper(gym.ObservationWrapper):
-    """Resize multi-channel observation for CNN processing"""
-    
-    def __init__(self, env, target_size=(84, 84)):
-        super().__init__(env)
-        self.target_size = target_size
-        
-        # Expect 4-channel input, output 4-channel
-        in_shape = env.observation_space.shape
-        self.observation_space = Box(
-            low=0.0, high=1.0,
-            shape=(*target_size, in_shape[-1]),
-            dtype=np.float32
-        )
-        
-    def observation(self, obs):
-        """Resize each channel independently preserving aspect ratio"""
-        h, w, c = obs.shape
-        target_h, target_w = self.target_size
-        
-        # Calculate scale preserving aspect ratio
-        scale = min(target_h / h, target_w / w)
-        new_h = int(h * scale)
-        new_w = int(w * scale)
-        
-        # Resize each channel
-        resized_channels = []
-        for i in range(c):
-            channel = obs[:, :, i]
-            # Convert to uint8 for cv2
-            channel_uint8 = (channel * 255).astype(np.uint8)
-            resized = cv2.resize(channel_uint8, (new_w, new_h), 
-                               interpolation=cv2.INTER_NEAREST)
-            resized_channels.append(resized)
-        
-        # Stack and center in canvas
-        resized = np.stack(resized_channels, axis=-1)
-        canvas = np.zeros((*self.target_size, c), dtype=np.uint8)
-        
-        offset_h = (target_h - new_h) // 2
-        offset_w = (target_w - new_w) // 2
-        canvas[offset_h:offset_h+new_h, offset_w:offset_w+new_w] = resized
-        
-        # Convert back to float
-        return canvas.astype(np.float32) / 255.0
-
-
-def make_env(env_name=None, render_mode=None, use_complete_vision=True, 
-             use_cnn=True, **env_kwargs):
+def make_env(render_mode="rgb_array", use_complete_vision=True):
     """
-    Create Tetris environment with COMPLETE vision
+    Create Tetris environment with complete vision
     
     Args:
-        use_complete_vision: If True, use 4-channel complete observation
-        use_cnn: If True, resize for CNN input
+        render_mode: Rendering mode ('rgb_array', 'human', None)
+        use_complete_vision: If True, enable complete vision with 4-channel observations
+    
+    Returns:
+        Gymnasium environment
     """
-    if env_name is None:
-        env_name = ENV_NAME
-        
-    env = gym.make(env_name, render_mode=render_mode or "rgb_array", **env_kwargs)
+    # Create base environment
+    env = gym.make(
+        'tetris_gymnasium/Tetris',
+        render_mode=render_mode,
+        **ENV_CONFIG
+    )
     
+    print(f"✅ Environment created: {env.spec.id}")
+    print(f"   Observation space: {env.observation_space}")
+    print(f"   Action space: {env.action_space}")
+    print(f"   Complete vision: {use_complete_vision}")
+    
+    # Wrap environment to convert dict observations to arrays
     if use_complete_vision:
-        # Apply the complete observation wrapper
-        env = CompleteTetrisObservationWrapper(env)
-        print("✅ Complete vision enabled: Board + Active Piece + Holder + Queue")
-        
-        if use_cnn:
-            env = EnhancedCNNWrapper(env, target_size=(84, 84))
-            print("✅ CNN mode: 84×84×4 multi-channel input")
-    else:
-        # Fall back to broken single-channel (for comparison)
-        from config import TetrisObservationWrapper, CorrectedTetrisBoardWrapper
-        env = TetrisObservationWrapper(env)
-        if use_cnn:
-            env = CorrectedTetrisBoardWrapper(env)
-        print("⚠️  Using limited vision (board only)")
-    
-    print(f"Final observation space: {env.observation_space}")
+        env = CompleteVisionWrapper(env)
     
     return env
 
 
-def test_complete_vision():
-    """Test the complete vision system"""
-    print("\n🔍 Testing Complete Vision System")
-    print("="*60)
+class CompleteVisionWrapper(gym.ObservationWrapper):
+    """
+    Wrapper to convert dict observations to playable area only.
     
-    # Create environment with complete vision
-    env = make_env(use_complete_vision=True, use_cnn=False)
-    obs, info = env.reset(seed=42)
+    CRITICAL FIX: tetris-gymnasium adds walls around the playable area!
+    - Board is 24x18 but playable area is only 20x10 (middle section)
+    - Walls at columns 0-3 and 14-17, bottom rows 20-23
+    - These walls make line clearing IMPOSSIBLE!
     
-    print(f"\nObservation shape: {obs.shape}")
-    print(f"Channels: {obs.shape[-1]}")
+    This wrapper extracts ONLY the playable 20x10 area.
+    """
     
-    # Analyze each channel
-    for i in range(obs.shape[-1]):
-        channel = obs[:, :, i]
-        non_zero = np.sum(channel > 0.01)
-        print(f"\nChannel {i}:")
-        print(f"  Non-zero pixels: {non_zero}")
-        print(f"  Range: [{channel.min():.3f}, {channel.max():.3f}]")
+    def __init__(self, env):
+        super().__init__(env)
         
-        if i == 0:
-            print("  (Board - obstacles)")
-        elif i == 1:
-            print("  (Active piece - THIS WAS MISSING!)")
-        elif i == 2:
-            print("  (Holder - strategic piece)")
-        elif i == 3:
-            print("  (Queue - next piece)")
-    
-    # Test observation changes
-    print("\n📊 Testing observation dynamics:")
-    
-    for step in range(5):
-        action = env.action_space.sample()
-        new_obs, reward, terminated, truncated, info = env.step(action)
+        base_space = env.observation_space
         
-        # Check each channel for changes
-        changes = []
-        for i in range(obs.shape[-1]):
-            change = np.abs(new_obs[:, :, i] - obs[:, :, i]).sum()
-            changes.append(change)
+        print(f"   Original observation: {type(base_space)}")
+        
+        if isinstance(base_space, gym.spaces.Dict):
+            # The board includes walls - we need to extract playable area
+            # Full board is 24x18, playable is 20x10
+            # Walls: columns 0-3 (left), 14-17 (right), rows 20-23 (bottom)
             
-        print(f"Step {step+1}: Action={action}, "
-              f"Channel changes: {[f'{c:.1f}' for c in changes]}")
-        
-        obs = new_obs
-        if terminated or truncated:
-            obs, info = env.reset()
+            playable_height = 20
+            playable_width = 10
             
-    env.close()
+            # Create observation space for playable area only
+            self.observation_space = gym.spaces.Box(
+                low=0, high=1,
+                shape=(playable_height, playable_width, 2),  # 2 channels
+                dtype=np.float32
+            )
+            
+            self.use_dict_obs = True
+            self.wall_left = 4  # Skip first 4 columns
+            self.wall_right = 14  # Stop at column 14
+            self.wall_bottom = 20  # Only use rows 0-19
+            
+            print(f"   ✅ Extracting playable area: {playable_height}x{playable_width}")
+            print(f"   ✅ Removing walls (cols 0-3, 14-17, rows 20-23)")
+            print(f"   ✅ Final shape: {self.observation_space.shape}")
+        else:
+            self.observation_space = base_space
+            self.use_dict_obs = False
     
-    print("\n✅ Complete vision system is working!")
-    print("The agent can now see:")
-    print("  • The board (what was already visible)")
-    print("  • The falling piece (what was missing!)")
-    print("  • The held piece (strategic planning)")
-    print("  • The next piece (forward planning)")
-    
+    def observation(self, obs):
+        """
+        Extract playable area from dict observation.
+        """
+        if not self.use_dict_obs:
+            obs = np.array(obs, dtype=np.float32)
+            if obs.max() > 1.0:
+                obs = obs / obs.max()
+            return obs
+        
+        # Extract board and active piece mask
+        board_full = obs['board'].astype(np.float32)
+        active_full = obs['active_tetromino_mask'].astype(np.float32)
+        
+        # Extract ONLY the playable area (remove walls)
+        # Playable area: rows 0-19, columns 4-13
+        board_playable = board_full[:self.wall_bottom, self.wall_left:self.wall_right]
+        active_playable = active_full[:self.wall_bottom, self.wall_left:self.wall_right]
+        
+        # Normalize board
+        if board_playable.max() > 1.0:
+            board_playable = board_playable / board_playable.max()
+        
+        # Stack channels: board + active piece
+        combined = np.stack([board_playable, active_playable], axis=-1)
+        
+        return combined
 
-if __name__ == "__main__":
-    test_complete_vision()
-    
+
+def print_config():
+    """Print current configuration"""
     print("\n" + "="*80)
-    print("🎯 TO FIX YOUR 62K EPISODE PLATEAU:")
+    print("TETRIS RL TRAINING CONFIGURATION")
     print("="*80)
-    print("1. Replace your config.py with this file:")
-    print("   cp config_complete_vision.py config.py")
-    print("\n2. Start training with complete vision:")
-    print("   python train.py --episodes 1000 --use_complete_vision")
-    print("\n3. Or use emergency breakthrough:")
-    print("   python emergency_breakthrough_complete.py")
-    print("\nExpected: First line clear within 20-50 episodes!")
-    print("(vs. 0 line clears in 62,800 episodes with broken vision)")
-    print("="*80)
+    print(f"Episodes:              {EPISODES}")
+    print(f"Batch size:            {BATCH_SIZE}")
+    print(f"Gamma (discount):      {GAMMA}")
+    print(f"Learning rate:         {LEARNING_RATE}")
+    print(f"Memory size:           {MEMORY_SIZE}")
+    print(f"Epsilon start:         {EPSILON_START}")
+    print(f"Epsilon end:           {EPSILON_END}")
+    print(f"Epsilon decay:         {EPSILON_DECAY}")
+    print(f"Hidden units:          {HIDDEN_UNITS}")
+    print(f"Reward shaping mode:   {REWARD_SHAPING_MODE}")
+    print(f"Board size:            {ENV_CONFIG['height']}x{ENV_CONFIG['width']}")
+    print("="*80 + "\n")
