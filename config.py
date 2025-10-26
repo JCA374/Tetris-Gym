@@ -118,7 +118,7 @@ class CompleteVisionWrapper(gym.ObservationWrapper):
             if board.shape == (24, 18):
                 # Standard tetris-gymnasium format with walls
                 # Playable area is in the center
-                playable = board[0:20, 4:14]  # Extract 20x10 playable area
+                playable = board[2:22, 4:14]  # Extract 20x10 playable area
             elif board.shape == (20, 10):
                 # Already correct size
                 playable = board
@@ -130,7 +130,7 @@ class CompleteVisionWrapper(gym.ObservationWrapper):
                 playable = board
             
             # ✅ FIXED: Add channel dimension (20, 10) → (20, 10, 1)
-            playable_3d = np.expand_dims(playable, axis=-1)
+            playable_3d = np.expand_dims((playable > 0).astype(np.uint8), axis=-1)
             
             return playable_3d.astype(np.uint8)
         else:

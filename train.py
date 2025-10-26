@@ -220,37 +220,34 @@ def train(args):
         # ✅ FIXED: Add board state monitoring
         if episode % args.log_freq == 0:
             # Analyze final board state from last observation
-            from src.reward_shaping import get_column_heights, count_holes, calculate_bumpiness
-            
-            board = None
-            if isinstance(next_obs, dict) and 'board' in next_obs:
-                board = next_obs['board']
-            elif isinstance(next_obs, np.ndarray):
-                if len(next_obs.shape) == 3:
-                    board = next_obs[:, :, 0] if next_obs.shape[-1] > 1 else next_obs[:, :, 0]
-                elif len(next_obs.shape) == 2:
-                    board = next_obs
-            
-            if board is not None:
-                heights = get_column_heights(board)
-                
-                # Calculate max row fullness
-                max_row_fullness = 0
-                for row in range(board.shape[0]):
-                    filled = np.sum(board[row, :] > 0)
-                    max_row_fullness = max(max_row_fullness, filled)
-                
-                # Calculate statistics
-                max_height = max(heights) if heights else 0
-                height_variance = np.var(heights)
-                holes = count_holes(board)
-                bumpiness = calculate_bumpiness(board)
-                
-                print(f"  📊 Board Stats:")
-                print(f"     Max row fullness: {max_row_fullness}/10 cells")
-                print(f"     Column heights: {heights}")
-                print(f"     Max height: {max_height}, Variance: {height_variance:.2f}")
-                print(f"     Holes: {holes}, Bumpiness: {bumpiness:.1f}")
+            from src.reward_shaping import (
+                extract_board_from_obs,  # ← use the same playable 20x10, binary board
+                get_column_heights,
+                count_holes,
+                calculate_bumpiness,
+            )
+
+            board = extract_board_from_obs(next_obs)   # ← unified crop + binarize (20x10)
+
+            heights = get_column_heights(board)
+
+            # Calculate max row fullness on the LOCKED board only
+            max_row_fullness = 0
+            for r in range(board.shape[0]):
+                filled = int((board[r, :] > 0).sum())
+                if filled > max_row_fullness:
+                    max_row_fullness = filled
+
+            max_height = max(heights) if heights else 0
+            height_variance = float(np.var(heights)) if len(heights) else 0.0
+            holes = count_holes(board)
+            bumpiness = calculate_bumpiness(board)
+
+            print("  📊 Board Stats:")
+            print(f"     Max row fullness: {max_row_fullness}/10 cells")
+            print(f"     Column heights: {heights}")
+            print(f"     Max height: {max_height}, Variance: {height_variance:.2f}")
+            print(f"     Holes: {holes}, Bumpiness: {bumpiness:.1f}")
 
 
 
