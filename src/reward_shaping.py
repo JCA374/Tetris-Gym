@@ -249,7 +249,7 @@ def count_complete_lines(board, prev_board=None):
 # REWARD SHAPING FUNCTIONS
 # =============================================================================
 
-def balanced_reward_shaping(obs, reward, done, info):
+def balanced_reward_shaping(obs, action, reward, done, info):
     """
     Balanced reward shaping with horizontal distribution bonus
     """
