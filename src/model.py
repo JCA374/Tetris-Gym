@@ -1,286 +1,118 @@
+# src/model.py
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import numpy as np
 
 
-class DQN(nn.Module):
+def _to_nchw(x: torch.Tensor) -> torch.Tensor:
     """
-    Deep Q-Network optimized for Tetris Gymnasium environments
-    Supports both image observations and feature vector observations
+    Accepterar (B,H,W), (B,H,W,C) eller (B,C,H,W) och returnerar (B,C,H,W).
+    Normaliserar till float32 [0,1].
     """
-
-    def __init__(self, obs_space, action_space):
-        super(DQN, self).__init__()
-
-        self.obs_space = obs_space
-        self.action_space = action_space
-        self.n_actions = action_space.n
-
-        # Determine input type based on observation space
-        if len(obs_space.shape) == 3:  # Image observation (H, W, C)
-            self._init_conv_network(obs_space)
-        elif len(obs_space.shape) == 1:  # Feature vector observation
-            self._init_fc_network(obs_space)
-        else:
-            raise ValueError(
-                f"Unsupported observation space shape: {obs_space.shape}")
-
-    def _init_conv_network(self, obs_space):
-        """Initialize convolutional network for image observations"""
-        self.network_type = "conv"
-        h, w, c = obs_space.shape
-
-        # Convolutional layers
-        self.conv1 = nn.Conv2d(c, 32, kernel_size=8, stride=4, padding=2)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2, padding=1)
-        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1)
-
-        # Calculate conv output size
-        conv_out_size = self._get_conv_output_size(obs_space.shape)
-
-        # Fully connected layers
-        self.fc1 = nn.Linear(conv_out_size, 512)
-        self.fc2 = nn.Linear(512, 256)
-        self.fc3 = nn.Linear(256, self.n_actions)
-
-        # Dropout for regularization
-        self.dropout = nn.Dropout(0.3)
-
-        print(
-            f"Initialized CNN-DQN: {conv_out_size} -> 512 -> 256 -> {self.n_actions}")
-
-    def _init_fc_network(self, obs_space):
-        """Initialize fully connected network for feature vector observations"""
-        self.network_type = "fc"
-        input_size = obs_space.shape[0]
-
-        # Fully connected layers
-        self.fc1 = nn.Linear(input_size, 512)
-        self.fc2 = nn.Linear(512, 256)
-        self.fc3 = nn.Linear(256, 128)
-        self.fc4 = nn.Linear(128, self.n_actions)
-
-        # Dropout for regularization
-        self.dropout = nn.Dropout(0.3)
-
-        print(
-            f"Initialized FC-DQN: {input_size} -> 512 -> 256 -> 128 -> {self.n_actions}")
-
-    def _get_conv_output_size(self, shape):
-        """Calculate the output size of convolutional layers"""
-        h, w, c = shape
-        # Simulate forward pass through conv layers
-        x = torch.zeros(1, c, h, w)
-        x = F.relu(self.conv1(x))
-        x = F.relu(self.conv2(x))
-        x = F.relu(self.conv3(x))
-        return x.numel()
-
-    def forward(self, x):
-        """Forward pass through the network"""
-        if self.network_type == "conv":
-            return self._forward_conv(x)
-        else:
-            return self._forward_fc(x)
-
-    def _forward_conv(self, x):
-        """Forward pass for convolutional network"""
-        # Ensure correct input format (batch_size, channels, height, width)
-        if len(x.shape) == 3:  # Add batch dimension
-            x = x.unsqueeze(0)
-
-        # If input is (batch, height, width, channels), transpose to (batch, channels, height, width)
-        if x.shape[-1] <= 4:  # Assuming channels is the smallest dimension
-            x = x.permute(0, 3, 1, 2)
-
-        # Convolutional layers
-        x = F.relu(self.conv1(x))
-        x = F.relu(self.conv2(x))
-        x = F.relu(self.conv3(x))
-
-        # Flatten for fully connected layers (ensure contiguous memory)
-        x = x.contiguous().view(x.size(0), -1)
-
-        # Fully connected layers
-        x = F.relu(self.fc1(x))
-        x = self.dropout(x)
-        x = F.relu(self.fc2(x))
-        x = self.dropout(x)
-        x = self.fc3(x)
-
-        return x
-
-    def _forward_fc(self, x):
-        """Forward pass for fully connected network"""
-        # Ensure batch dimension
-        if len(x.shape) == 1:
-            x = x.unsqueeze(0)
-
-        # Fully connected layers
-        x = F.relu(self.fc1(x))
-        x = self.dropout(x)
-        x = F.relu(self.fc2(x))
-        x = self.dropout(x)
-        x = F.relu(self.fc3(x))
-        x = self.dropout(x)
-        x = self.fc4(x)
-
-        return x
+    if x.dim() == 3:                 # (B,H,W)
+        x = x.unsqueeze(1)           # -> (B,1,H,W)
+    elif x.dim() == 4 and x.shape[-1] in (1, 3):  # (B,H,W,C)
+        x = x.permute(0, 3, 1, 2)    # -> (B,C,H,W)
+    # annars antar vi redan (B,C,H,W)
+    if x.dtype != torch.float32:
+        x = x.float()
+    # Om dina obs är 0..255
+    if x.max() > 1.0:
+        x = x / 255.0
+    return x
 
 
-class DuelingDQN(nn.Module):
+def _infer_input_shape(obs_space):
     """
-    Dueling DQN architecture for improved value estimation
-    Particularly useful for Tetris where not all actions may be equally important
+    Returns (C,H,W) as integers from either a Gym Box space or a raw tuple.
+    Falls back to (1,20,10) if unclear.
     """
+    shape = getattr(obs_space, "shape", None) or obs_space
+    if shape is None:
+        return (1, 20, 10)
 
-    def __init__(self, obs_space, action_space):
-        super(DuelingDQN, self).__init__()
+    # common cases: (H,W,C) or (C,H,W)
+    if len(shape) == 3:
+        H,W,C = shape
+        # If last dim is channels (e.g. 1), move to first
+        if C <= 16:
+            return (C, H, W)
+        # Otherwise assume first is channels
+        C,H,W = shape
+        return (C,H,W)
+    elif len(shape) == 2:
+        H,W = shape
+        return (1, H, W)
+    else:
+        # Fallback
+        flat = int(np.prod(shape))
+        return (1, flat, 1)
 
-        self.obs_space = obs_space
-        self.action_space = action_space
-        self.n_actions = action_space.n
 
-        if len(obs_space.shape) == 3:  # Image observation
-            self._init_conv_features(obs_space)
-        elif len(obs_space.shape) == 1:  # Feature vector observation
-            self._init_fc_features(obs_space)
-        else:
-            raise ValueError(
-                f"Unsupported observation space shape: {obs_space.shape}")
-
-        # Dueling streams
-        self.value_stream = nn.Sequential(
-            nn.Linear(self.feature_size, 256),
-            nn.ReLU(),
-            nn.Linear(256, 1)
-        )
-
-        self.advantage_stream = nn.Sequential(
-            nn.Linear(self.feature_size, 256),
-            nn.ReLU(),
-            nn.Linear(256, self.n_actions)
-        )
-
-        print(
-            f"Initialized Dueling DQN with {self.feature_size} features -> Value + {self.n_actions} Advantages")
-
-    def _init_conv_features(self, obs_space):
-        """Initialize convolutional feature extractor"""
-        self.network_type = "conv"
-        h, w, c = obs_space.shape
+class ConvDQN(nn.Module):
+    def __init__(self, input_shape, n_actions):
+        super().__init__()
+        C, H, W = input_shape
 
         self.features = nn.Sequential(
-            nn.Conv2d(c, 32, kernel_size=8, stride=4, padding=2),
-            nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=4, stride=2, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(),
-            # Adaptive pooling for consistent output size
-            nn.AdaptiveAvgPool2d((7, 7))
+            nn.Conv2d(C, 32, kernel_size=3, padding=1), nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1), nn.ReLU(),
+            nn.AdaptiveAvgPool2d((20, 10)),   # <-- NYTT: fixera spatial storlek
+            nn.Flatten(),
+        )
+        flat = 64 * 20 * 10                   # 12800
+
+        self.head = nn.Sequential(
+            nn.Linear(flat, 256), nn.ReLU(),
+            nn.Linear(256, n_actions),
         )
 
-        self.feature_size = 64 * 7 * 7
-
-    def _init_fc_features(self, obs_space):
-        """Initialize fully connected feature extractor"""
-        self.network_type = "fc"
-        input_size = obs_space.shape[0]
-
-        self.features = nn.Sequential(
-            nn.Linear(input_size, 512),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(512, 256),
-            nn.ReLU(),
-            nn.Dropout(0.3)
-        )
-
-        self.feature_size = 256
 
     def forward(self, x):
-        """Forward pass through dueling architecture"""
-        # Handle input format
-        if self.network_type == "conv":
-            if len(x.shape) == 3:
-                x = x.unsqueeze(0)
-            if x.shape[-1] <= 4:  # Channels last to channels first
-                x = x.permute(0, 3, 1, 2)
-        else:
-            if len(x.shape) == 1:
-                x = x.unsqueeze(0)
+        x = _to_nchw(x)
+        return self.head(self.features(x))
 
-        # Extract features
-        features = self.features(x)
-        # After permute/features, tensor may be non-contiguous → use reshape
-        features = features.reshape(features.size(0), -1)
 
-        # Compute value and advantage streams
-        value = self.value_stream(features)
-        advantage = self.advantage_stream(features)
-
-        # Combine value and advantage (dueling architecture)
-        q_values = value + advantage - advantage.mean(dim=1, keepdim=True)
-
-        return q_values
-
+class MLPDQN(nn.Module):
+    def __init__(self, input_shape, n_actions):
+        super().__init__()
+        C,H,W = input_shape
+        in_dim = C*H*W
+        self.net = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(in_dim, 512), nn.ReLU(),
+            nn.Linear(512, 256), nn.ReLU(),
+            nn.Linear(256, n_actions),
+        )
+    def forward(self, x):
+        return self.net(x)
 
 def create_model(obs_space, action_space, model_type="dqn"):
     """
-    Factory function to create appropriate model based on requirements
-    
-    Args:
-        obs_space: Environment observation space
-        action_space: Environment action space
-        model_type: "dqn" or "dueling_dqn"
-    
-    Returns:
-        Initialized model
+    Factory used by Agent:
+      - obs_space: Gym space (Box) or shape-like
+      - action_space: Gym Discrete (needs .n)
+      - model_type: "dqn" (conv) or "mlp"
     """
-    if model_type.lower() == "dueling_dqn":
-        return DuelingDQN(obs_space, action_space)
-    else:
-        return DQN(obs_space, action_space)
+    def _n_actions_from(action_space):
+        # Gym/Gymnasium Discrete
+        if hasattr(action_space, "n"):
+            return int(action_space.n)
+        # Already an int-like
+        try:
+            return int(action_space)
+        except Exception as e:
+            raise TypeError(
+                f"Cannot determine n_actions from: {type(action_space)}"
+            ) from e
+
+    n_actions = _n_actions_from(action_space)
 
 
-# Model testing function
-def test_model():
-    """Test model creation and forward pass"""
-    import gymnasium as gym
 
-    print("Testing model architectures...")
+    C,H,W = _infer_input_shape(obs_space)
 
-    # Test with dummy spaces
-    obs_spaces = [
-        gym.spaces.Box(low=0, high=255, shape=(
-            84, 84, 4), dtype=np.uint8),  # Image
-        gym.spaces.Box(low=-1, high=1, shape=(200,),
-                       dtype=np.float32),      # Features
-    ]
-
-    action_space = gym.spaces.Discrete(7)  # Typical Tetris action space
-
-    for i, obs_space in enumerate(obs_spaces):
-        print(f"\nTest {i+1}: Observation space {obs_space.shape}")
-
-        # Test both model types
-        for model_type in ["dqn", "dueling_dqn"]:
-            model = create_model(obs_space, action_space, model_type)
-
-            # Create dummy input
-            dummy_input = torch.randn((1,) + obs_space.shape)
-
-            # Forward pass
-            output = model(dummy_input)
-            print(
-                f"  {model_type}: Input {dummy_input.shape} -> Output {output.shape}")
-            assert output.shape == (
-                1, action_space.n), f"Expected {(1, action_space.n)}, got {output.shape}"
-
-    print("✅ All model tests passed!")
-
-
-if __name__ == "__main__":
-    test_model()
+    if model_type in ("mlp", "dense"):
+        return MLPDQN((C,H,W), n_actions)
+    # default conv
+    return ConvDQN((C,H,W), n_actions)
