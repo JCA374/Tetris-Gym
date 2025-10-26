@@ -14,54 +14,110 @@ import numpy as np
 # BOARD ANALYSIS HELPER FUNCTIONS
 # =============================================================================
 
+
 def extract_board_from_obs(obs):
     """
-    Extract 2D board array from observation
-    
-    Handles different observation formats:
-    - Dict with 'board' key
-    - Tensor that needs conversion
-    - Already a numpy array
+    Extract and normalize the board from observation
     """
-    # If observation is a dict
+    # Handle different observation formats
     if isinstance(obs, dict):
+        board = obs.get('board', np.zeros((20, 10)))
         if 'board' in obs:
-            board = obs['board']
+            # Extract only the playable area (20x10) from the full board
+            full_board = obs['board']
+            if full_board.shape == (24, 18):
+                # Tetris Gymnasium uses 24x18 with padding
+                board = full_board[2:22, 4:14]  # Extract 20x10 playable area
+            elif full_board.shape == (20, 10):
+                board = full_board
+            else:
+                # Fallback: try to extract 20x10 from whatever shape
+                h, w = full_board.shape[:2]
+                h_start = max(0, (h - 20) // 2)
+                w_start = max(0, (w - 10) // 2)
+                board = full_board[h_start:h_start+20, w_start:w_start+10]
+    elif hasattr(obs, 'shape'):
+        if len(obs.shape) == 3 and obs.shape[2] == 1:
+            board = obs[:, :, 0]
+        elif len(obs.shape) == 2:
+            board = obs
         else:
-            # Might be flattened, try to get the board channel
             board = obs
     else:
-        board = obs
+        board = np.array(obs)
     
-    # Convert tensor to numpy if needed
-    if hasattr(board, 'cpu'):
-        board = board.cpu().numpy()
+    # Ensure board is 20x10
+    if board.shape != (20, 10):
+        # Resize if necessary
+        target_board = np.zeros((20, 10))
+        h, w = min(20, board.shape[0]), min(10, board.shape[1]) if len(board.shape) > 1 else 10
+        target_board[:h, :w] = board[:h, :w] if len(board.shape) > 1 else board[:h].reshape(-1, 1)[:, 0]
+        board = target_board
     
-    board = np.array(board)
-    
-    # Handle different array shapes
-    if len(board.shape) > 2:
-        # If shape is (H, W, C), take first channel
-        if board.shape[-1] == 1:
-            board = board.squeeze(-1)
-        elif len(board.shape) == 3:
-            # Frame stacking - use most recent
-            board = board[:, :, -1]
-    
-    # Ensure 2D
-    if len(board.shape) != 2:
-        return None
-    
-    # ✨ CRITICAL FIX: Normalize board values to 0-1 range
-    # Without this, board values of 0-255 cause penalties to be 100x too large!
+    # ✨ CRITICAL FIX: Force binary normalization
+    # Convert any non-zero values to 1.0 for consistent rewards
     if board.size > 0:
-        max_val = board.max()
-        if max_val > 1.0:
-            board = board / max_val
-            # Uncomment to debug: print(f"⚠️ Board normalized from 0-{max_val} to 0-1")
-        
+        board = (board > 0).astype(float)  # 0.0 or 1.0 only!
+    
     return board
 
+def calculate_horizontal_distribution(board):
+    """
+    Calculate how horizontally distributed the pieces are.
+    Returns a value between 0 (all in center) and 1 (well distributed).
+    """
+    if board.size == 0 or not board.any():
+        return 0.5  # Neutral for empty board
+    
+    # Calculate center of mass for each row
+    rows, cols = board.shape
+    col_indices = np.arange(cols)
+    
+    # Calculate horizontal variance for occupied rows
+    variances = []
+    for row in board:
+        if row.any():
+            # Calculate center of mass for this row
+            center = np.average(col_indices, weights=row)
+            # Calculate variance from center
+            variance = np.average((col_indices - center)**2, weights=row)
+            # Normalize by max possible variance (corners)
+            max_variance = (cols - 1)**2 / 4
+            normalized_variance = variance / max_variance if max_variance > 0 else 0
+            variances.append(normalized_variance)
+    
+    if variances:
+        return np.mean(variances)
+    return 0.5
+
+def calculate_height_penalty(board):
+    """Calculate penalty based on max column height"""
+    col_heights = np.array([
+        20 - np.argmax(board[:, col] > 0) if board[:, col].any() else 0
+        for col in range(board.shape[1])
+    ])
+    max_height = np.max(col_heights)
+    avg_height = np.mean(col_heights)
+    
+    # Reduced exponential penalty for height
+    height_penalty = (max_height / 20) ** 2 * 10  # Reduced from 30
+    avg_penalty = (avg_height / 20) * 5  # Reduced from 20
+    
+    return height_penalty + avg_penalty
+
+def calculate_hole_penalty(board):
+    """Calculate penalty for holes (empty cells below filled cells)"""
+    holes = 0
+    for col in range(board.shape[1]):
+        column = board[:, col]
+        # Find the first filled cell from top
+        filled_indices = np.where(column > 0)[0]
+        if len(filled_indices) > 0:
+            first_filled = filled_indices[0]
+            # Count empty cells below the first filled cell
+            holes += np.sum(column[first_filled:] == 0)
+    
+    return holes * 2  # Reduced from 5 points penalty per hole
 
 def get_column_heights(board):
     """
@@ -87,41 +143,6 @@ def get_column_heights(board):
     
     return heights
 
-def calculate_horizontal_distribution(board):
-    """
-    Reward spreading pieces horizontally across columns
-    
-    This encourages the agent to move pieces LEFT/RIGHT before dropping,
-    preventing the vertical stacking problem where pieces stack in same columns.
-    """
-    if board is None:
-        return 0.0
-    
-    heights = get_column_heights(board)
-    
-    # Reward even distribution (low variance is good)
-    height_variance = np.var(heights)
-    evenness_reward = -height_variance * 0.2
-    
-    # Count filled cells in each column
-    column_fullness = [np.count_nonzero(board[:, i]) for i in range(board.shape[1])]
-    
-    # Penalize concentration in few columns
-    concentration = np.std(column_fullness)
-    concentration_penalty = -concentration * 0.3
-    
-    # Reward using full width of board
-    empty_columns = sum(1 for h in heights if h == 0)
-    empty_penalty = -empty_columns * 0.2
-    
-    # Bonus for spreading pieces
-    columns_used = sum(1 for h in heights if h > 0)
-    spread_bonus = (columns_used / 10.0) * 0.5  # Reward using all 10 columns
-    
-    total_reward = evenness_reward + concentration_penalty + empty_penalty + spread_bonus
-    
-    return total_reward
-
 def calculate_aggregate_height(board):
     """
     Aggregate height = sum of all column heights
@@ -130,7 +151,6 @@ def calculate_aggregate_height(board):
     """
     heights = get_column_heights(board)
     return sum(heights)
-
 
 def count_holes(board):
     """
@@ -162,28 +182,17 @@ def count_holes(board):
     
     return holes
 
-
 def calculate_bumpiness(board):
-    """
-    Bumpiness = sum of absolute height differences between adjacent columns
+    """Calculate the bumpiness (height differences between adjacent columns)"""
+    col_heights = np.array([
+        20 - np.argmax(board[:, col] > 0) if board[:, col].any() else 0
+        for col in range(board.shape[1])
+    ])
     
-    MINIMIZE this: Smooth/flat top is better, easier to place pieces
-    
-    Example:
-    Heights: [3, 5, 5, 4, 6, 5]
-    Bumpiness = |3-5| + |5-5| + |5-4| + |4-6| + |6-5| = 2+0+1+2+1 = 6
-    """
-    heights = get_column_heights(board)
-    
-    if len(heights) < 2:
-        return 0
-    
-    bumpiness = 0
-    for i in range(len(heights) - 1):
-        bumpiness += abs(heights[i] - heights[i + 1])
-    
-    return bumpiness
-
+    if len(col_heights) > 1:
+        bumpiness = np.sum(np.abs(np.diff(col_heights)))
+        return bumpiness * 0.5  # Reduced from 2 points penalty per height difference
+    return 0
 
 def calculate_wells(board):
     """
@@ -212,49 +221,10 @@ def calculate_wells(board):
     
     return wells
 
-
 def get_max_height(board):
     """Get maximum column height"""
     heights = get_column_heights(board)
     return max(heights) if heights else 0
-
-def calculate_horizontal_distribution(board):
-    """
-    Reward spreading pieces horizontally across columns
-    
-    This encourages the agent to move pieces LEFT/RIGHT before dropping,
-    preventing the vertical stacking problem where pieces stack in same columns.
-    
-    Returns:
-        float: Reward based on how evenly pieces are distributed horizontally
-    """
-    if board is None:
-        return 0.0
-    
-    heights = get_column_heights(board)
-    
-    # 1. Reward even distribution (low variance is good)
-    height_variance = np.var(heights)
-    evenness_reward = -height_variance * 0.2
-    
-    # 2. Count filled cells in each column
-    column_fullness = [np.count_nonzero(board[:, i]) for i in range(board.shape[1])]
-    
-    # 3. Penalize concentration in few columns
-    concentration = np.std(column_fullness)
-    concentration_penalty = -concentration * 0.3
-    
-    # 4. Reward using full width of board
-    empty_columns = sum(1 for h in heights if h == 0)
-    empty_penalty = -empty_columns * 0.2
-    
-    # 5. Bonus for spreading pieces across columns
-    columns_used = sum(1 for h in heights if h > 0)
-    spread_bonus = (columns_used / 10.0) * 0.5  # Reward using all 10 columns
-    
-    total_reward = evenness_reward + concentration_penalty + empty_penalty + spread_bonus
-    
-    return total_reward
 
 def count_complete_lines(board, prev_board=None):
     """
@@ -275,180 +245,118 @@ def count_complete_lines(board, prev_board=None):
     
     return complete_lines
 
-
 # =============================================================================
 # REWARD SHAPING FUNCTIONS
 # =============================================================================
 
-def aggressive_reward_shaping(obs, action, base_reward, done, info):
+def balanced_reward_shaping(obs, reward, done, info):
     """
-    AGGRESSIVE reward shaping with board quality heuristics
-    
-    Based on research: Score = -w0×height + w1×lines - w2×holes - w3×bumpiness
-    
-    This version focuses HEAVILY on:
-    1. Punishing bad board states (holes, height, bumpiness)
-    2. Rewarding line clears enormously
-    3. Small survival bonus to keep playing
+    Balanced reward shaping with horizontal distribution bonus
     """
-    shaped_reward = 0  # Start at zero for aggressive approach
-    
-    # Extract board
     board = extract_board_from_obs(obs)
     
-    if board is not None:
-        # Calculate board metrics
-        aggregate_height = calculate_aggregate_height(board)
-        holes = count_holes(board)
-        bumpiness = calculate_bumpiness(board)
-        max_height = get_max_height(board)
-        wells = calculate_wells(board)
-        
-        # PENALTIES (negative rewards)
-        shaped_reward -= aggregate_height * 0.51  # Penalize total height
-        shaped_reward -= holes * 3.5               # HEAVILY penalize holes
-        shaped_reward -= bumpiness * 0.35          # Penalize bumpy surface
-        shaped_reward -= wells * 0.65              # Penalize wells
-        shaped_reward += calculate_horizontal_distribution(board) * 2.0  # ✅ FIXED: Encourage horizontal spread!
-
-
-        
-        # Extra penalty if dangerously high
-        if max_height > 15:  # More than 75% full
-            shaped_reward -= (max_height - 15) * 2.0
+    # Base reward (from environment)
+    shaped_reward = reward * 100  # Amplify line clear rewards
     
-    # HUGE LINE CLEAR BONUSES
-    lines = info.get('lines_cleared', 0)
-    if lines > 0:
-        line_rewards = {
-            1: 1000,   # Single
-            2: 3000,   # Double  
-            3: 6000,   # Triple
-            4: 20000   # TETRIS!!!
-        }
-        bonus = line_rewards.get(lines, lines * 1000)
-        shaped_reward += bonus
-        print(f"  🔥 {lines} LINES! +{bonus} MEGA BONUS! Shaped reward: {shaped_reward:.1f}")
+    # Calculate penalties (REDUCED)
+    height_penalty = calculate_height_penalty(board) * 0.3  # Reduced from 1.0
+    hole_penalty = calculate_hole_penalty(board) * 0.3  # Reduced from 1.0
+    bumpiness_penalty = calculate_bumpiness(board) * 0.3  # Reduced from 1.0
     
-    # Small survival bonus (so agent doesn't die immediately)
-    if not done:
-        shaped_reward += 1.0
+    # Calculate bonuses
+    horizontal_bonus = calculate_horizontal_distribution(board) * 5  # Reduced from 10
+    
+    # Survival bonus (increases with time)
+    steps = info.get('steps', 0)
+    survival_bonus = min(steps * 0.05, 5)  # Reduced from 0.1 and cap at 5
+    
+    # Line clear bonus
+    lines_cleared = info.get('lines_cleared', 0)
+    if lines_cleared > 0:
+        shaped_reward += lines_cleared * 50  # Big bonus for clearing lines
+    
+    # Combine all factors
+    shaped_reward += horizontal_bonus + survival_bonus
+    shaped_reward -= height_penalty + hole_penalty + bumpiness_penalty
     
     # Death penalty
     if done:
-        shaped_reward -= 50.0
+        shaped_reward -= 50  # Reduced from 100
+    
+    # Clamp to reasonable range
+    shaped_reward = np.clip(shaped_reward, -100, 500)  # Reduced lower bound
     
     return shaped_reward
 
-
-def positive_reward_shaping(obs, action, base_reward, done, info):
+def aggressive_reward_shaping(obs, reward, done, info):
     """
-    POSITIVE reward shaping - more balanced approach
-    
-    Encourages both survival and line clearing with board quality guidance
+    More aggressive reward shaping that heavily penalizes height
     """
-    shaped_reward = base_reward
-    
-    # Extract board
     board = extract_board_from_obs(obs)
     
-    if board is not None:
-        # Calculate board metrics
-        aggregate_height = calculate_aggregate_height(board)
-        holes = count_holes(board)
-        bumpiness = calculate_bumpiness(board)
-        max_height = get_max_height(board)
-        
-        # Gentler penalties
-        shaped_reward -= aggregate_height * 0.2
-        shaped_reward -= holes * 2.0
-        shaped_reward -= bumpiness * 0.15
-        shaped_reward += calculate_horizontal_distribution(board) * 1.5 
-        
-        # Danger zone penalty
-        if max_height > 16:
-            shaped_reward -= (max_height - 16) * 1.0
+    shaped_reward = reward * 150  # Higher amplification
     
-    # Survival bonus
-    if not done:
-        shaped_reward += 2.0
+    # Stronger penalties (but still reduced from original)
+    height_penalty = calculate_height_penalty(board) * 0.6  # Reduced from 2.0
+    hole_penalty = calculate_hole_penalty(board) * 0.5  # Reduced from 1.5
+    bumpiness_penalty = calculate_bumpiness(board) * 0.5  # Reduced from 1.5
     
-    # LINE CLEAR BONUSES
-    lines = info.get('lines_cleared', 0)
-    if lines > 0:
-        line_rewards = {
-            1: 500,
-            2: 1500,
-            3: 3000,
-            4: 10000
-        }
-        bonus = line_rewards.get(lines, lines * 500)
-        shaped_reward += bonus
-        
-        if lines == 1:
-            print(f"  🎯 LINE! +{bonus}")
-        elif lines == 2:
-            print(f"  🎯🎯 DOUBLE! +{bonus}")
-        elif lines == 3:
-            print(f"  🎯🎯🎯 TRIPLE! +{bonus}")
-        elif lines == 4:
-            print(f"  🎯🎯🎯🎯 TETRIS!!! +{bonus}")
+    # Bonuses
+    horizontal_bonus = calculate_horizontal_distribution(board) * 8  # Reduced from 15
+    survival_bonus = min(info.get('steps', 0) * 0.1, 10)  # Reduced from 0.2, cap at 10
     
-    # Small death penalty
+    # Line clear mega bonus
+    lines_cleared = info.get('lines_cleared', 0)
+    if lines_cleared > 0:
+        shaped_reward += lines_cleared * 100
+    
+    shaped_reward += horizontal_bonus + survival_bonus
+    shaped_reward -= height_penalty + hole_penalty + bumpiness_penalty
+    
     if done:
-        shaped_reward -= 10.0
+        shaped_reward -= 75  # Reduced from 150
+    
+    shaped_reward = np.clip(shaped_reward, -150, 1000)  # Reduced lower bound
     
     return shaped_reward
 
-
-def balanced_reward_shaping(obs, action, base_reward, done, info):
+def positive_reward_shaping(obs, reward, done, info):
     """
-    BALANCED reward shaping - middle ground
-    
-    Uses standard Tetris AI formula with proven weights
+    Emphasizes positive rewards over penalties
     """
-    shaped_reward = base_reward
-    
-    # Extract board
     board = extract_board_from_obs(obs)
     
-    if board is not None:
-        # Calculate all metrics
-        aggregate_height = calculate_aggregate_height(board)
-        holes = count_holes(board)
-        bumpiness = calculate_bumpiness(board)
-        wells = calculate_wells(board)
-        
-        # Research-based weights (from successful Tetris AIs)
-        shaped_reward -= aggregate_height * 0.35
-        shaped_reward -= holes * 2.5
-        shaped_reward -= bumpiness * 0.25
-        shaped_reward -= wells * 0.4
-        shaped_reward += calculate_horizontal_distribution(board) * 1.8  
+    shaped_reward = reward * 200  # Very high amplification for positive actions
     
-    # Moderate survival bonus
-    if not done:
-        shaped_reward += 1.5
+    # Very mild penalties  
+    height_penalty = calculate_height_penalty(board) * 0.15  # Reduced from 0.5
+    hole_penalty = calculate_hole_penalty(board) * 0.15  # Reduced from 0.5
+    bumpiness_penalty = calculate_bumpiness(board) * 0.15  # Reduced from 0.5
     
-    # Line clear rewards (exponential-ish)
-    lines = info.get('lines_cleared', 0)
-    if lines > 0:
-        line_rewards = {
-            1: 750,
-            2: 2000,
-            3: 4500,
-            4: 15000
-        }
-        bonus = line_rewards.get(lines, lines * 750)
-        shaped_reward += bonus
-        print(f"  ✨ {lines} lines cleared! +{bonus}")
+    # Strong bonuses
+    horizontal_bonus = calculate_horizontal_distribution(board) * 10  # Reduced from 20
+    survival_bonus = min(info.get('steps', 0) * 0.2, 20)  # Reduced from 0.5, cap at 20
     
-    # Moderate death penalty
+    # Huge line clear bonus
+    lines_cleared = info.get('lines_cleared', 0)
+    if lines_cleared > 0:
+        shaped_reward += lines_cleared * 200
+    
+    # Low placement bonus (keeping pieces low)
+    avg_height = np.mean([20 - np.argmax(board[:, col] > 0) if board[:, col].any() else 0
+                          for col in range(board.shape[1])])
+    if avg_height < 5:
+        shaped_reward += 5  # Reduced from 10
+    
+    shaped_reward += horizontal_bonus + survival_bonus
+    shaped_reward -= height_penalty + hole_penalty + bumpiness_penalty
+    
     if done:
-        shaped_reward -= 30.0
+        shaped_reward -= 25  # Reduced from 50 - smaller death penalty
+    
+    shaped_reward = np.clip(shaped_reward, -50, 2000)  # Reduced lower bound
     
     return shaped_reward
-
 
 # =============================================================================
 # DIAGNOSTIC / TESTING FUNCTIONS
@@ -495,7 +403,6 @@ def test_helper_functions():
     print(f"Heights: {get_column_heights(bumpy_board)}")
     print(f"Bumpiness: {calculate_bumpiness(bumpy_board)}")
     print(f"Wells: {calculate_wells(bumpy_board)}")
-
 
 if __name__ == "__main__":
     # Run tests when file is executed directly
