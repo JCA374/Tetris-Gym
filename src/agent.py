@@ -8,7 +8,16 @@ import numpy as np
 import random
 from collections import deque
 from src.model import create_model
-from config import ACTION_LEFT, ACTION_RIGHT, ACTION_DOWN, ACTION_HARD_DROP, ACTION_ROTATE_CW, ACTION_ROTATE_CCW, ACTION_SWAP, ACTION_NOOP
+from config import (
+    ACTION_NOOP,
+    ACTION_LEFT, 
+    ACTION_RIGHT, 
+    ACTION_DOWN, 
+    ACTION_ROTATE_CW,
+    ACTION_ROTATE_CCW,
+    ACTION_HARD_DROP,
+    ACTION_SWAP
+)
 
 
 class Agent:
@@ -122,50 +131,85 @@ class Agent:
 
     def select_action(self, state, training=True):
         """
-        Select action using epsilon-greedy strategy with PROPER rotation support
+        Select action using epsilon-greedy strategy with ALL 8 actions.
+        
+        Args:
+            state: Current game observation
+            training: If True, use epsilon-greedy; if False, always exploit
+        
+        Returns:
+            action: Integer action ID (0-7)
         """
-        from config import ACTION_LEFT, ACTION_RIGHT, ACTION_DOWN, ACTION_HARD_DROP
-        from config import ACTION_ROTATE_CW, ACTION_ROTATE_CCW  # <-- MAKE SURE BOTH ARE IMPORTED
+        from config import (ACTION_NOOP, ACTION_LEFT, ACTION_RIGHT, ACTION_DOWN,
+                        ACTION_ROTATE_CW, ACTION_ROTATE_CCW, ACTION_HARD_DROP, ACTION_SWAP)
         
         if training and random.random() < self.epsilon:
-            # === EXPLORATION: Random action ===
+            # ===================================================================
+            # EXPLORATION: Random action selection
+            # ===================================================================
             
-            # Check what phase of training we're in
+            exploration_roll = random.random()
+            
             if self.episodes_done < 1000:
-                # EARLY TRAINING: Heavy emphasis on horizontal movement
-                exploration_roll = random.random()
-                if exploration_roll < 0.4:
-                    # 40% chance: Horizontal movement (LEFT or RIGHT)
+                # ---------------------------------------------------------------
+                # EARLY TRAINING: Prioritize basic movement and line clearing
+                # ---------------------------------------------------------------
+                if exploration_roll < 0.35:
+                    # 35% - Horizontal movement (critical for line clearing!)
                     return random.choice([ACTION_LEFT, ACTION_RIGHT])
-                elif exploration_roll < 0.5:
-                    # 10% chance: Rotation (use BOTH directions) ✅ FIXED
+                
+                elif exploration_roll < 0.50:
+                    # 15% - Both rotation directions
                     return random.choice([ACTION_ROTATE_CW, ACTION_ROTATE_CCW])
-                    
-                elif exploration_roll < 0.75:
-                    # 25% chance: Soft drop
-                    return ACTION_DOWN
-                else:
-                    # 25% chance: Hard drop
-                    return ACTION_HARD_DROP
-                    
-            else:
-                # LATER TRAINING: More balanced random exploration
-                exploration_roll = random.random()
-                if exploration_roll < 0.3:
-                    # 30% chance: Horizontal movement
-                    return random.choice([ACTION_LEFT, ACTION_RIGHT])
-                elif exploration_roll < 0.45:
-                    # 15% chance: Rotation (use BOTH directions) ✅ FIXED
-                    return random.choice([ACTION_ROTATE_CW, ACTION_ROTATE_CCW])
+                
                 elif exploration_roll < 0.55:
-                    # 10% chance: Soft drop  
+                    # 5% - SWAP (try holding pieces)
+                    return ACTION_SWAP
+                
+                elif exploration_roll < 0.75:
+                    # 20% - Soft drop (controlled descent)
                     return ACTION_DOWN
-                else:
-                    # 45% chance: Hard drop (for faster games)
+                
+                elif exploration_roll < 0.95:
+                    # 20% - Hard drop (fast placement)
                     return ACTION_HARD_DROP
+                
+                else:
+                    # 5% - NOOP (sometimes waiting is strategic)
+                    return ACTION_NOOP
+            
+            else:
+                # ---------------------------------------------------------------
+                # LATER TRAINING: More balanced exploration
+                # ---------------------------------------------------------------
+                if exploration_roll < 0.25:
+                    # 25% - Horizontal movement
+                    return random.choice([ACTION_LEFT, ACTION_RIGHT])
+                
+                elif exploration_roll < 0.40:
+                    # 15% - Both rotation directions
+                    return random.choice([ACTION_ROTATE_CW, ACTION_ROTATE_CCW])
+                
+                elif exploration_roll < 0.50:
+                    # 10% - SWAP
+                    return ACTION_SWAP
+                
+                elif exploration_roll < 0.60:
+                    # 10% - Soft drop
+                    return ACTION_DOWN
+                
+                elif exploration_roll < 0.95:
+                    # 35% - Hard drop (faster games)
+                    return ACTION_HARD_DROP
+                
+                else:
+                    # 5% - NOOP
+                    return ACTION_NOOP
         
         else:
-            # === EXPLOITATION: Use Q-network ===
+            # ===================================================================
+            # EXPLOITATION: Use Q-network to select best action
+            # ===================================================================
             state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
             with torch.no_grad():
                 q_values = self.q_network(state_tensor)
