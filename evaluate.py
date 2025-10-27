@@ -48,8 +48,9 @@ class SynchronizedTetrisEnvironments:
     """
 
     def __init__(self, render_mode="rgb_array", enable_rendering=False):
-        # Create main environment for AI (wrapped)
-        self.main_env = make_env(ENV_NAME, render_mode="rgb_array")
+        # FIXED: make_env() in config.py doesn't take ENV_NAME as first argument
+        # It already uses ENV_NAME internally
+        self.main_env = make_env(render_mode="rgb_array")
 
         # Create render environment if needed (raw, unwrapped)
         self.render_env = None
@@ -194,105 +195,79 @@ def evaluate_model(agent, env, args):
         })
 
         # Print episode summary
-        print(f"✅ Episode {ep+1:3d}: Reward: {total_reward:7.1f}, "
-              f"Steps: {steps:4d}, Time: {duration:5.2f}s, "
-              f"Speed: {steps/duration:6.1f} steps/sec")
-
-    # Back to train mode
-    agent.q_network.train()
+        print(f"✅ Episode {ep+1} Complete:")
+        print(f"   Total Reward: {total_reward:.2f}")
+        print(f"   Steps: {steps}")
+        print(f"   Duration: {duration:.2f}s")
+        print(f"   Avg Reward/Step: {total_reward/steps:.4f}" if steps > 0 else "   No steps")
 
     return episode_rewards, episode_steps, episode_times, game_info
 
 
 def print_statistics(episode_rewards, episode_steps, episode_times):
-    """Print detailed statistics"""
+    """Print evaluation statistics"""
     print("\n" + "=" * 60)
-    print("EVALUATION STATISTICS")
+    print("📊 EVALUATION STATISTICS")
     print("=" * 60)
 
-    # Reward statistics
-    print("\nReward Statistics:")
-    print(f"  Mean:     {np.mean(episode_rewards):8.2f}")
-    print(f"  Std:      {np.std(episode_rewards):8.2f}")
-    print(f"  Min:      {np.min(episode_rewards):8.2f}")
-    print(f"  Max:      {np.max(episode_rewards):8.2f}")
-    print(f"  Median:   {np.median(episode_rewards):8.2f}")
+    # Reward stats
+    print(f"\n💰 Rewards:")
+    print(f"   Mean:   {np.mean(episode_rewards):.2f}")
+    print(f"   Std:    {np.std(episode_rewards):.2f}")
+    print(f"   Min:    {np.min(episode_rewards):.2f}")
+    print(f"   Max:    {np.max(episode_rewards):.2f}")
 
-    # Steps statistics
-    print("\nSteps Statistics:")
-    print(f"  Mean:     {np.mean(episode_steps):8.1f}")
-    print(f"  Std:      {np.std(episode_steps):8.1f}")
-    print(f"  Min:      {np.min(episode_steps):8.0f}")
-    print(f"  Max:      {np.max(episode_steps):8.0f}")
-    print(f"  Median:   {np.median(episode_steps):8.1f}")
+    # Steps stats
+    print(f"\n👣 Steps:")
+    print(f"   Mean:   {np.mean(episode_steps):.1f}")
+    print(f"   Std:    {np.std(episode_steps):.1f}")
+    print(f"   Min:    {np.min(episode_steps)}")
+    print(f"   Max:    {np.max(episode_steps)}")
 
-    # Time statistics
-    print("\nTime Statistics:")
-    print(f"  Mean:     {np.mean(episode_times):8.2f}s")
-    print(f"  Total:    {np.sum(episode_times):8.1f}s")
-    print(
-        f"  Avg/step: {np.sum(episode_times)/np.sum(episode_steps)*1000:8.2f}ms")
-
-    # Performance metrics
-    print("\nPerformance Metrics:")
-    avg_reward_per_step = np.mean(
-        [r/s for r, s in zip(episode_rewards, episode_steps)])
-    print(f"  Avg reward per step: {avg_reward_per_step:8.4f}")
-    print(
-        f"  Steps per second:    {np.sum(episode_steps)/np.sum(episode_times):8.1f}")
-
-    # Success metrics
-    positive_rewards = [r for r in episode_rewards if r > 0]
-    if positive_rewards:
-        print(
-            f"  Episodes with positive reward: {len(positive_rewards)}/{len(episode_rewards)} ({100*len(positive_rewards)/len(episode_rewards):.1f}%)")
-
-    print("=" * 60)
+    # Time stats
+    print(f"\n⏱️  Time per Episode:")
+    print(f"   Mean:   {np.mean(episode_times):.2f}s")
+    print(f"   Total:  {np.sum(episode_times):.2f}s")
 
 
 def save_results(episode_rewards, episode_steps, episode_times, game_info, args):
-    """Save evaluation results"""
-    results_dir = os.path.join(MODEL_DIR, "evaluation_results")
+    """Save evaluation results to file"""
+    results_dir = "evaluation_results"
     make_dir(results_dir)
 
-    import json
-    from datetime import datetime
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    filename = f"eval_{timestamp}.txt"
+    filepath = os.path.join(results_dir, filename)
 
-    # Sanitize NumPy types for JSON
-    for ep in game_info:
-        for k, v in ep.items():
-            if isinstance(v, np.generic):
-                ep[k] = v.item()
+    with open(filepath, 'w') as f:
+        f.write("Tetris AI Evaluation Results\n")
+        f.write("=" * 60 + "\n\n")
 
-    # Prepare results data
-    results = {
-        'evaluation_time': datetime.now().isoformat(),
-        'args': vars(args),
-        'summary': {
-            'episodes': len(episode_rewards),
-            'mean_reward': float(np.mean(episode_rewards)),
-            'std_reward': float(np.std(episode_rewards)),
-            'mean_steps': float(np.mean(episode_steps)),
-            'std_steps': float(np.std(episode_steps)),
-            'mean_time': float(np.mean(episode_times)),
-            'total_time': float(np.sum(episode_times)),
-        },
-        'episodes': game_info
-    }
+        f.write(f"Model: {args.model_path}\n")
+        f.write(f"Episodes: {args.episodes}\n")
+        f.write(f"Timestamp: {timestamp}\n\n")
 
-    # Save results
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    results_file = os.path.join(results_dir, f"evaluation_{timestamp}.json")
+        f.write("Rewards:\n")
+        f.write(f"  Mean: {np.mean(episode_rewards):.2f}\n")
+        f.write(f"  Std:  {np.std(episode_rewards):.2f}\n")
+        f.write(f"  Min:  {np.min(episode_rewards):.2f}\n")
+        f.write(f"  Max:  {np.max(episode_rewards):.2f}\n\n")
 
-    with open(results_file, 'w') as f:
-        json.dump(results, f, indent=2)
+        f.write("Steps:\n")
+        f.write(f"  Mean: {np.mean(episode_steps):.1f}\n")
+        f.write(f"  Std:  {np.std(episode_steps):.1f}\n")
+        f.write(f"  Min:  {np.min(episode_steps)}\n")
+        f.write(f"  Max:  {np.max(episode_steps)}\n\n")
 
-    print(f"\nResults saved to: {results_file}")
+        f.write("Time:\n")
+        f.write(f"  Mean: {np.mean(episode_times):.2f}s\n")
+        f.write(f"  Total: {np.sum(episode_times):.2f}s\n")
 
-    # Also save as CSV
+    print(f"\n💾 Results saved to: {filepath}")
+
+    # Save CSV for detailed analysis
+    csv_file = os.path.join(results_dir, f"eval_{timestamp}.csv")
     import csv
-    csv_file = os.path.join(results_dir, f"evaluation_{timestamp}.csv")
-
     with open(csv_file, 'w', newline='') as f:
         if game_info:
             writer = csv.DictWriter(f, fieldnames=game_info[0].keys())
