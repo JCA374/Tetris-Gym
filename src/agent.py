@@ -164,47 +164,15 @@ class Agent:
     
     def remember(self, state, action, reward, next_state, done, info=None, original_reward=None):
         """Store experience with shape validation"""
-        shaped_reward = self._apply_reward_shaping(reward, done, info or {})
+        # NOTE: train.py already applies reward shaping, so we store the reward as-is
         
         # Validate shapes
         if self._expected_shape is None:
             self._expected_shape = state.shape
         
-        # Store experience
-        self.memory.append((state, action, shaped_reward, next_state, done))
-    
-    def _apply_reward_shaping(self, reward, done, info):
-        """Apply reward shaping optimized for long training"""
-        if self.reward_shaping_type == "none":
-            return reward
-        
-        shaped_reward = reward
-        
-        # Penalties and bonuses
-        if done:
-            shaped_reward -= 20
-        else:
-            shaped_reward += 0.01
-        
-        # Line clear bonuses (stronger for long training)
-        # Try multiple possible keys for lines cleared
-        line_keys = ['lines_cleared', 'cleared_lines', 'lines', 'n_lines', 'number_of_lines']
-        lines_cleared = 0
-        for key in line_keys:
-            if key in info:
-                lines_cleared = info[key] or 0
-                break
-        
-        if lines_cleared > 0:
-            # Progressive bonus: more valuable in later training
-            episode_bonus_multiplier = min(2.0, 1.0 + (self.episodes_done / 10000))
-            shaped_reward += lines_cleared * 10 * episode_bonus_multiplier
-            
-            if lines_cleared == 4:  # Tetris bonus
-                shaped_reward += 40 * episode_bonus_multiplier
-        
-        return shaped_reward
-    
+        # Store experience (reward is already shaped by train.py)
+        self.memory.append((state, action, reward, next_state, done))
+
     def learn(self):
         """Perform one step of learning"""
         if len(self.memory) < self.batch_size:
