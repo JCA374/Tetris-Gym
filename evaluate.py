@@ -156,7 +156,7 @@ def evaluate_model(agent, env, args):
 
         while not done:
             # Select action (greedy evaluation)
-            action = agent.select_action(obs, eval_mode=True)
+            action = agent.select_action(obs, training=False)
 
             # Step environment
             obs, reward, terminated, truncated, info = env.step(action)

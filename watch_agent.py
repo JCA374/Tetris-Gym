@@ -161,7 +161,7 @@ def watch_agent(model_path, num_episodes=3, steps_per_episode=50):
             analysis = analyze_board(board)
             
             # Select action
-            action = agent.select_action(obs, eval_mode=True)
+            action = agent.select_action(obs, training=False)
             action_counts[action] += 1
             episode_actions.append(action)
             
