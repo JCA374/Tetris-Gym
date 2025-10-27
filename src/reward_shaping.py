@@ -75,7 +75,7 @@ def balanced_reward_shaping(obs, action, reward, done, info):
     """
     from src.reward_shaping import (
         extract_board_from_obs, count_holes, get_column_heights,
-        calculate_bumpiness, horizontal_distribution
+        calculate_bumpiness, get_horizontal_distribution
     )
     import numpy as np
     
@@ -92,7 +92,7 @@ def balanced_reward_shaping(obs, action, reward, done, info):
     holes = count_holes(board)
     max_height = max(heights) if heights else 0
     bumpiness = calculate_bumpiness(heights)
-    distribution = horizontal_distribution(board)
+    distribution = get_horizontal_distribution(board)
     
     # ========================================================================
     # 1. LINE CLEARING (Primary Objective) - HUGE rewards
@@ -118,7 +118,7 @@ def aggressive_reward_shaping(obs, action, reward, done, info):
     shaped_reward = 0
     board = extract_board_from_obs(obs)
     
-    shaped_reward += 2.0 if not done else -100
+    ## shaped_reward += 2.0 if not done else -100 ## endless loop of rotation?
     
     lines = info.get('lines_cleared', 0) or info.get('number_of_lines', 0)
     if lines > 0:

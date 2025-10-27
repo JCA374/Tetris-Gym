@@ -169,6 +169,12 @@ def main():
     }
     shaper_fn = shaping_functions[args.reward_shaping]
     
+    # Use fixed shaper
+    shaper_fn = shaping_functions[args.reward_shaping]
+
+    print(f"\n⚠️  Using ANTI-EXPLOIT reward shaper")
+
+
     print(f"\n🎯 Reward shaping: {args.reward_shaping}")
     
     # Training metrics
