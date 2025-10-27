@@ -40,10 +40,18 @@ def count_holes(board):
     return holes
 
 
-def calculate_bumpiness(board):
-    """Calculate bumpiness (height differences between adjacent columns)"""
-    heights = get_column_heights(board)
-    return sum(abs(heights[i] - heights[i+1]) for i in range(len(heights)-1))
+def calculate_bumpiness(heights):
+    """
+    Calculate bumpiness (sum of height differences)
+    
+    Args:
+        heights: List of column heights (NOT the board!)
+    """
+    if not heights or len(heights) < 2:
+        return 0
+    
+    bumpiness = sum(abs(heights[i] - heights[i+1]) for i in range(len(heights) - 1))
+    return bumpiness
 
 
 def get_max_height(board):
@@ -67,42 +75,61 @@ def balanced_reward_shaping(obs, action, reward, done, info):
     """
     Fixed balanced reward shaping - prevents rotation exploitation
     
-    Key changes:
-    1. NO per-step rewards (no reward just for rotating)
-    2. Only reward actual progress (lines cleared)
-    3. Penalize time-wasting (very small step penalty)
-    4. Death penalty only if no progress made
+    CRITICAL FIXES:
+    1. Removed per-step survival bonus that caused rotation exploit
+    2. Added -1 penalty for steps without progress
+    3. Always returns a float (never None)
+    
+    Args:
+        obs: Current observation
+        action: Action taken
+        reward: Original environment reward (not used in shaping)
+        done: Episode termination flag
+        info: Environment info dict
+    
+    Returns:
+        shaped_reward: Modified reward value (always a float)
     """
-    from src.reward_shaping import (
-        extract_board_from_obs, count_holes, get_column_heights,
-        calculate_bumpiness, get_horizontal_distribution
-    )
     import numpy as np
     
-    # Start with ZERO reward (not the base reward!)
+    # Start from zero (don't use base reward)
     shaped_reward = 0.0
     
-    # Extract board
+    # ========================================================================
+    # EXTRACT BOARD STATE
+    # ========================================================================
     board = extract_board_from_obs(obs)
-    if board is None or len(board.shape) != 2:
-        return shaped_reward
     
-    # Get board metrics
+    # Safety check - if board extraction fails, return penalty
+    if board is None:
+        return -1.0
+    
+    if len(board.shape) != 2:
+        return -1.0
+    
+    # ========================================================================
+    # CALCULATE BOARD METRICS
+    # ========================================================================
     heights = get_column_heights(board)
+    
+    # Safety check for heights
+    if not heights:
+        return -1.0
+    
     holes = count_holes(board)
-    max_height = max(heights) if heights else 0
-    bumpiness = calculate_bumpiness(heights)
+    max_height = max(heights)
+    bumpiness = calculate_bumpiness(heights)  # Pass heights, not board!
     distribution = get_horizontal_distribution(board)
     
     # ========================================================================
-    # 1. LINE CLEARING (Primary Objective) - HUGE rewards
+    # 1. LINE CLEARING REWARDS (Primary Objective)
     # ========================================================================
     lines = (info.get('lines_cleared', 0) or 
              info.get('number_of_lines', 0) or 
              info.get('lines', 0) or 0)
     
     if lines > 0:
-        # Exponential rewards for more lines
+        # Big rewards for clearing lines - exponential scaling
         line_rewards = {
             1: 1000,   # Single line
             2: 3000,   # Double
@@ -110,7 +137,56 @@ def balanced_reward_shaping(obs, action, reward, done, info):
             4: 12000   # Tetris!
         }
         shaped_reward += line_rewards.get(lines, lines * 1000)
+    else:
+        # CRITICAL: Penalty for not clearing lines
+        # This prevents rotation exploit!
+        shaped_reward -= 1.0
     
+    # ========================================================================
+    # 2. BOARD STATE PENALTIES
+    # ========================================================================
+    
+    # Holes are very bad (hard to recover from)
+    shaped_reward -= holes * 5.0
+    
+    # Height penalty (keep board low for survival)
+    shaped_reward -= max_height * 1.0
+    
+    # Bumpiness penalty (smooth surface is easier to manage)
+    shaped_reward -= bumpiness * 0.5
+    
+    # ========================================================================
+    # 3. STRATEGIC BONUSES
+    # ========================================================================
+    
+    # Horizontal distribution bonus (spread pieces across board)
+    shaped_reward += distribution * 5.0
+    
+    # Low height bonus (encourages keeping board low)
+    if max_height < 10:
+        shaped_reward += 5.0
+    
+    # ========================================================================
+    # 4. DEATH PENALTY
+    # ========================================================================
+    
+    if done:
+        if lines == 0:
+            # Big penalty for dying without clearing any lines
+            shaped_reward -= 50.0
+        else:
+            # Smaller penalty if at least cleared some lines
+            shaped_reward -= 10.0
+    
+    # ========================================================================
+    # 5. CLAMP AND RETURN
+    # ========================================================================
+    
+    # Prevent extreme values
+    shaped_reward = np.clip(shaped_reward, -500.0, 15000.0)
+    
+    # Always return a float
+    return float(shaped_reward)
 
 
 def aggressive_reward_shaping(obs, action, reward, done, info):
