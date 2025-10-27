@@ -52,6 +52,7 @@ ACTION_DOWN = 3
 ACTION_ROTATE_CW = 4
 ACTION_ROTATE_CCW = 5
 ACTION_HARD_DROP = 6
+ACTION_SWAP = 7 
 
 # Action meanings will be discovered and updated at runtime
 ACTION_MEANINGS = None
@@ -69,67 +70,68 @@ def _board_from_obs(obs):
 def discover_action_meanings(env):
     """Discover the actual action meanings from the environment"""
     global ACTION_MEANINGS, ACTION_LEFT, ACTION_RIGHT, ACTION_DOWN
-    global ACTION_ROTATE_CW, ACTION_ROTATE_CCW, ACTION_HARD_DROP, ACTION_NOOP
+    global ACTION_ROTATE_CW, ACTION_ROTATE_CCW, ACTION_HARD_DROP, ACTION_NOOP, ACTION_SWAP
     
     # Try to get action meanings from environment
     try:
-        if hasattr(env.unwrapped, 'get_action_meanings'):
+        if hasattr(env, 'get_action_meanings'):
+            meanings = env.get_action_meanings()
+        elif hasattr(env.unwrapped, 'get_action_meanings'):
             meanings = env.unwrapped.get_action_meanings()
-            ACTION_MEANINGS = meanings
-            print(f"🔍 Discovered action meanings: {meanings}")
-            
-            # Map action names to indices
-            name_to_idx = {name.lower(): i for i, name in enumerate(meanings)}
-            
-            # Update action constants with discovered values
-            ACTION_NOOP = name_to_idx.get("noop", name_to_idx.get("no_op", 0))
-            ACTION_LEFT = name_to_idx.get("left", 1)
-            ACTION_RIGHT = name_to_idx.get("right", 2)
-            ACTION_DOWN = name_to_idx.get("down", name_to_idx.get("soft_drop", 3))
-            ACTION_ROTATE_CW = name_to_idx.get("rotate_cw", name_to_idx.get("rotate_right", 4))
-            ACTION_ROTATE_CCW = name_to_idx.get("rotate_ccw", name_to_idx.get("rotate_left", 5))
-            ACTION_HARD_DROP = name_to_idx.get("hard_drop", name_to_idx.get("drop", 6))
-            
-            print(f"   LEFT={ACTION_LEFT}, RIGHT={ACTION_RIGHT}, HARD_DROP={ACTION_HARD_DROP}")
-            return True
-    except:
-        pass
-    
-    # Fallback: Test actions empirically
-    print("⚠️  Could not get action meanings from env, using empirical testing...")
-    
-    obs, _ = env.reset(seed=42)
-    initial_board = _board_from_obs(obs) # Fixed by GTP 
-    
-    # Test each action to see what it does
-    action_effects = {}
-    for action in range(env.action_space.n):
-        obs, _ = env.reset(seed=42)  # Reset to same state
-        
-        # Take the action multiple times to see its effect
-        for _ in range(3):
-            obs, _, done, _, _ = env.step(action)
-            if done:
-                break
-        
-        board_after = _board_from_obs(obs) #Fixed by GPT
-        
-        # Analyze the effect
-        if np.array_equal(initial_board, board_after):
-            action_effects[action] = "likely_noop"
-        elif np.sum(board_after) > np.sum(initial_board):
-            action_effects[action] = "likely_drop"
         else:
-            action_effects[action] = "likely_movement"
+            meanings = None
+            
+        if meanings:
+            ACTION_MEANINGS = meanings
+            print(f"✅ Discovered {len(meanings)} actions from environment")
+            
+            # Update action constants
+            for i, meaning in enumerate(meanings):
+                if 'LEFT' in meaning.upper():
+                    ACTION_LEFT = i
+                elif 'RIGHT' in meaning.upper():
+                    ACTION_RIGHT = i
+                elif 'DOWN' in meaning.upper() and 'HARD' not in meaning.upper():
+                    ACTION_DOWN = i
+                elif 'ROTATE' in meaning.upper() and ('CW' in meaning.upper() or 'CLOCKWISE' in meaning.upper()):
+                    ACTION_ROTATE_CW = i
+                elif 'ROTATE' in meaning.upper() and ('CCW' in meaning.upper() or 'COUNTER' in meaning.upper()):
+                    ACTION_ROTATE_CCW = i
+                elif 'HARD' in meaning.upper() and 'DROP' in meaning.upper():
+                    ACTION_HARD_DROP = i
+                elif 'SWAP' in meaning.upper() or 'HOLD' in meaning.upper():
+                    ACTION_SWAP = i
+                elif 'NOOP' in meaning.upper() or 'NOTHING' in meaning.upper():
+                    ACTION_NOOP = i
+                    
+            return ACTION_MEANINGS
+            
+    except Exception as e:
+        print(f"⚠️  Could not get action meanings: {e}")
     
-    print(f"   Empirical action effects: {action_effects}")
+    # Fallback to standard Tetris actions (INCLUDING ACTION 7)
+    print("   Using standard Tetris action mapping")
+    ACTION_MEANINGS = [
+        'NOOP',       # 0
+        'LEFT',       # 1
+        'RIGHT',      # 2
+        'DOWN',       # 3
+        'ROTATE_CW',  # 4
+        'ROTATE_CCW', # 5
+        'HARD_DROP',  # 6
+        'SWAP'        # 7 <-- ADD THIS
+    ]
     
-    # Best guess based on common patterns
-    ACTION_MEANINGS = ["NOOP", "LEFT", "RIGHT", "DOWN", "ROTATE_CW", "ROTATE_CCW", "HARD_DROP"]
-    print(f"   Using standard Tetris action mapping")
+    ACTION_NOOP = 0
+    ACTION_LEFT = 1
+    ACTION_RIGHT = 2
+    ACTION_DOWN = 3
+    ACTION_ROTATE_CW = 4
+    ACTION_ROTATE_CCW = 5
+    ACTION_HARD_DROP = 6
+    ACTION_SWAP = 7  # <-- ADD THIS
     
-    return True
-
+    return ACTION_MEANINGS
 
 def make_env(render_mode="rgb_array", use_complete_vision=True, use_cnn=False):
     """Create Tetris environment with complete vision"""

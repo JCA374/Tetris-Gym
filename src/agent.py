@@ -8,7 +8,7 @@ import numpy as np
 import random
 from collections import deque
 from src.model import create_model
-from config import ACTION_LEFT, ACTION_RIGHT, ACTION_HARD_DROP, ACTION_ROTATE_CW, ACTION_DOWN
+from config import ACTION_LEFT, ACTION_RIGHT, ACTION_DOWN, ACTION_HARD_DROP, ACTION_ROTATE_CW, ACTION_ROTATE_CCW, ACTION_SWAP, ACTION_NOOP
 
 
 class Agent:
@@ -119,27 +119,28 @@ class Agent:
         })
         
         return schedule
-    
-    def select_action(self, state, eval_mode=False):
-        """Select action with FIXED exploration that actually uses LEFT/RIGHT"""
-        if eval_mode or random.random() > self.epsilon:
-            # Exploitation: use network
-            with torch.no_grad():
-                state_tensor = self._preprocess_state(state)
-                q_values = self.q_network(state_tensor)
-                return q_values.argmax().item()
-        else:
-            # FIXED Exploration: Actually use LEFT/RIGHT actions
-            exploration_roll = random.random()
+
+    def select_action(self, state, training=True):
+        """
+        Select action using epsilon-greedy strategy with PROPER rotation support
+        """
+        from config import ACTION_LEFT, ACTION_RIGHT, ACTION_DOWN, ACTION_HARD_DROP
+        from config import ACTION_ROTATE_CW, ACTION_ROTATE_CCW  # <-- MAKE SURE BOTH ARE IMPORTED
+        
+        if training and random.random() < self.epsilon:
+            # === EXPLORATION: Random action ===
             
-            # EARLY TRAINING: Focus on horizontal movement to discover line clearing
-            if self.episodes_done < self.max_episodes * 0.1:  # First 10% of training
+            # Check what phase of training we're in
+            if self.episodes_done < 1000:
+                # EARLY TRAINING: Heavy emphasis on horizontal movement
+                exploration_roll = random.random()
                 if exploration_roll < 0.4:
-                    # 40% chance: Horizontal movement (to find line clearing!)
+                    # 40% chance: Horizontal movement (LEFT or RIGHT)
                     return random.choice([ACTION_LEFT, ACTION_RIGHT])
                 elif exploration_roll < 0.5:
-                    # 10% chance: Rotation
-                    return ACTION_ROTATE_CW
+                    # 10% chance: Rotation (use BOTH directions) ✅ FIXED
+                    return random.choice([ACTION_ROTATE_CW, ACTION_ROTATE_CCW])
+                    
                 elif exploration_roll < 0.75:
                     # 25% chance: Soft drop
                     return ACTION_DOWN
@@ -149,19 +150,27 @@ class Agent:
                     
             else:
                 # LATER TRAINING: More balanced random exploration
+                exploration_roll = random.random()
                 if exploration_roll < 0.3:
                     # 30% chance: Horizontal movement
                     return random.choice([ACTION_LEFT, ACTION_RIGHT])
                 elif exploration_roll < 0.45:
-                    # 15% chance: Rotation
-                    return ACTION_ROTATE_CW
+                    # 15% chance: Rotation (use BOTH directions) ✅ FIXED
+                    return random.choice([ACTION_ROTATE_CW, ACTION_ROTATE_CCW])
                 elif exploration_roll < 0.55:
                     # 10% chance: Soft drop  
                     return ACTION_DOWN
                 else:
                     # 45% chance: Hard drop (for faster games)
                     return ACTION_HARD_DROP
-    
+        
+        else:
+            # === EXPLOITATION: Use Q-network ===
+            state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+            with torch.no_grad():
+                q_values = self.q_network(state_tensor)
+            return q_values.argmax().item()
+
     def remember(self, state, action, reward, next_state, done, info=None, original_reward=None):
         """Store experience with shape validation"""
         # NOTE: train.py already applies reward shaping, so we store the reward as-is
