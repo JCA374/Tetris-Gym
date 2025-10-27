@@ -64,28 +64,53 @@ def get_horizontal_distribution(board):
 
 
 def balanced_reward_shaping(obs, action, reward, done, info):
-    """Balanced - IGNORES base reward, starts fresh"""
-    shaped_reward = 0  # Start from 0, ignore environment's -100/step
+    """
+    Fixed balanced reward shaping - prevents rotation exploitation
+    
+    Key changes:
+    1. NO per-step rewards (no reward just for rotating)
+    2. Only reward actual progress (lines cleared)
+    3. Penalize time-wasting (very small step penalty)
+    4. Death penalty only if no progress made
+    """
+    from src.reward_shaping import (
+        extract_board_from_obs, count_holes, get_column_heights,
+        calculate_bumpiness, horizontal_distribution
+    )
+    import numpy as np
+    
+    # Start with ZERO reward (not the base reward!)
+    shaped_reward = 0.0
+    
+    # Extract board
     board = extract_board_from_obs(obs)
+    if board is None or len(board.shape) != 2:
+        return shaped_reward
     
-    # Survival bonus
-    shaped_reward += 5.0 if not done else -20
+    # Get board metrics
+    heights = get_column_heights(board)
+    holes = count_holes(board)
+    max_height = max(heights) if heights else 0
+    bumpiness = calculate_bumpiness(heights)
+    distribution = horizontal_distribution(board)
     
-    # Line clear bonuses
-    lines = info.get('lines_cleared', 0) or info.get('number_of_lines', 0)
+    # ========================================================================
+    # 1. LINE CLEARING (Primary Objective) - HUGE rewards
+    # ========================================================================
+    lines = (info.get('lines_cleared', 0) or 
+             info.get('number_of_lines', 0) or 
+             info.get('lines', 0) or 0)
+    
     if lines > 0:
-        shaped_reward += [500, 1500, 3000, 10000][lines-1]
+        # Exponential rewards for more lines
+        line_rewards = {
+            1: 1000,   # Single line
+            2: 3000,   # Double
+            3: 6000,   # Triple
+            4: 12000   # Tetris!
+        }
+        shaped_reward += line_rewards.get(lines, lines * 1000)
     
-    # Penalties
-    max_height = get_max_height(board)
-    if max_height > 10:
-        shaped_reward -= (max_height - 10) * 3
-    
-    shaped_reward -= count_holes(board) * 2
-    shaped_reward -= calculate_bumpiness(board) * 0.5
-    shaped_reward += get_horizontal_distribution(board) * 10
-    
-    return max(shaped_reward, -50)
 
 
 def aggressive_reward_shaping(obs, action, reward, done, info):
