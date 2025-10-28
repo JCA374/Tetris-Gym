@@ -1,9 +1,10 @@
 # config.py
-"""Configuration for Tetris RL Training - FIXED with action discovery"""
 
 import numpy as np
 import gymnasium as gym
 import tetris_gymnasium.envs
+
+from src.env_wrapper import CompleteVisionWrapper 
 
 # Environment name
 ENV_NAME = 'tetris_gymnasium/Tetris'
@@ -58,6 +59,73 @@ ACTION_SWAP = 7
 ACTION_MEANINGS = None
 
 #Added by GPT def _board_from_obs(obs)
+import numpy as np
+
+def crop_playfield(board):
+    """
+    Tar en binär/uint8 board med väggar (t.ex. 24x18) och returnerar en 20x10 spelplan.
+    Upptäcker väggkolumner/väggrader automatiskt genom att leta efter kolumner/rader som
+    nästan alltid är fyllda (”vägg”) och tar den största 10-breda inre regionen.
+    """
+    arr = np.array(board)
+    if arr.ndim == 3:  # H, W, C
+        arr2d = arr[..., 0]
+    else:
+        arr2d = arr
+
+    H, W = arr2d.shape
+    # Snabb exit om redan 20x10
+    if (H, W) == (20, 10):
+        return arr
+
+    # Heuristik: väggar är kolumner/rader med hög andel fyllda celler.
+    # Skapa mask över "fylld" (värde > 0)
+    filled = (arr2d > 0).astype(np.uint8)
+
+    col_fill_ratio = filled.mean(axis=0)  # shape (W,)
+    row_fill_ratio = filled.mean(axis=1)  # shape (H,)
+
+    # Väggkolumner ~ nästan alltid fyllda (t.ex. > 0.9)
+    wall_cols = np.where(col_fill_ratio > 0.9)[0]
+    wall_rows = np.where(row_fill_ratio > 0.9)[0]
+
+    # Inre kolumner = de som INTE är väggar
+    inner_cols = [c for c in range(W) if c not in set(wall_cols)]
+    inner_rows = [r for r in range(H) if r not in set(wall_rows)]
+
+    # Om inre fönster är större än 10/20, ta mittsektionen (vanligt i Tetris: 24x18 → ta 20x10 i mitten)
+    def center_slice(indices, want_len):
+        if len(indices) <= want_len:
+            return indices
+        start = (len(indices) - want_len) // 2
+        return indices[start:start + want_len]
+
+    inner_cols = center_slice(inner_cols, 10)
+    inner_rows = center_slice(inner_rows, 20)
+
+    cropped2d = arr2d[np.ix_(inner_rows, inner_cols)]
+
+    # Lägg ev. tillbaka kanal
+    if arr.ndim == 3:
+        cropped = np.expand_dims(cropped2d.astype(np.uint8), axis=-1)
+    else:
+        cropped = cropped2d.astype(np.uint8)
+
+    return cropped
+
+def make_env(render_mode="rgb_array", use_complete_vision=True, use_cnn=False):
+    env = gym.make(ENV_NAME, render_mode=render_mode, **ENV_CONFIG)
+    print(f"✅ Environment created: {env.spec.id}")
+    print(f"   Action space: {env.action_space} (n={env.action_space.n})")
+
+    discover_action_meanings(env)
+
+    if use_complete_vision:
+        env = CompleteVisionWrapper(env)
+        print(f"   Observation space: {env.observation_space}")
+
+    return env
+
 def _board_from_obs(obs):
     # Plocka ut 2D-board ur obs (oavsett dict eller array)
     board = obs.get('board') if isinstance(obs, dict) else obs
@@ -133,7 +201,6 @@ def discover_action_meanings(env):
     
     return ACTION_MEANINGS
 
-
 def get_action_meanings():
     """
     Return action meanings as a dictionary mapping action_id -> meaning string
@@ -161,7 +228,6 @@ def get_action_meanings():
     return {i: meaning for i, meaning in enumerate(ACTION_MEANINGS)}
 
 
-def make_env(render_mode="rgb_array", use_complete_vision=True, use_cnn=False):
     """Create Tetris environment with complete vision"""
     # Create base environment
     env = gym.make(
@@ -183,48 +249,15 @@ def make_env(render_mode="rgb_array", use_complete_vision=True, use_cnn=False):
     
     return env
 
+def make_env(render_mode="rgb_array", use_complete_vision=True, use_cnn=False):
+    env = gym.make(ENV_NAME, render_mode=render_mode, **ENV_CONFIG)
+    print(f"✅ Environment created: {env.spec.id}")
+    print(f"   Action space: {env.action_space} (n={env.action_space.n})")
 
-class CompleteVisionWrapper(gym.ObservationWrapper):
-    """Wrapper to convert dict observations to 3D array for CNN"""
-    
-    def __init__(self, env):
-        super().__init__(env)
-        
-        # Define observation space as 3D array (H, W, C)
-        # Assuming standard Tetris board: 20x10
-        height = env.unwrapped.height if hasattr(env.unwrapped, 'height') else 20
-        width = env.unwrapped.width if hasattr(env.unwrapped, 'width') else 10
-        
-        self.observation_space = gym.spaces.Box(
-            low=0,
-            high=255,
-            shape=(height, width, 1),
-            dtype=np.uint8
-        )
-    
-    def observation(self, obs):
-        """Convert observation to 3D array"""
-        # Handle dict observations
-        if isinstance(obs, dict):
-            # Try to get board from common keys
-            board = obs.get('board', obs.get('observation', None))
-            if board is None:
-                # If no board key, use first array value
-                board = next(iter(obs.values()))
-        else:
-            board = obs
-        
-        # Ensure board is 2D
-        if len(board.shape) == 3:
-            # If already 3D, take first channel or flatten
-            if board.shape[0] <= 4:  # Channels first
-                board = board[0]
-            else:  # Channels last
-                board = board[:, :, 0]
-        
-        # Add channel dimension and ensure uint8
-        board = board.astype(np.uint8)
-        if len(board.shape) == 2:
-            board = np.expand_dims(board, axis=-1)
-        
-        return board
+    discover_action_meanings(env)
+
+    if use_complete_vision:
+        env = CompleteVisionWrapper(env)
+        print(f"   Observation space: {env.observation_space}")
+
+    return env

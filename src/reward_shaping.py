@@ -1,6 +1,13 @@
-# src/reward_shaping.py
+# reward_shaping.py
 """
-IMPROVED Reward Shaping for Tetris with Stronger Anti-Stacking Penalties
+IMPROVED Tetris Reward Shaping - Addresses Zero Lines Cleared Problem
+
+Key Changes from Original:
+1. MUCH stronger line clearing rewards (exponential scaling)
+2. Larger penalties for bad play (holes, height, single-column)
+3. Strong incentive for board flatness and distribution
+4. Step-by-step progress rewards (not just survival bonus)
+5. NO exploitable patterns (no free rewards for doing nothing)
 """
 
 import numpy as np
@@ -8,13 +15,10 @@ import numpy as np
 
 def extract_board_from_obs(obs):
     """
-    Extract and normalize board from observation.
+    Extract the board from observation.
     
-    Args:
-        obs: Observation from environment (dict or array)
-    
-    Returns:
-        board: 2D numpy array (H, W) with values in [0, 1]
+    Handles both dict and array observations.
+    Returns 2D numpy array normalized to [0, 1].
     """
     if isinstance(obs, dict):
         if 'board' in obs:
@@ -22,90 +26,84 @@ def extract_board_from_obs(obs):
         elif 'observation' in obs:
             board = obs['observation']
         else:
-            # Fallback: use first array-like value
-            for v in obs.values():
-                if hasattr(v, 'shape') and len(v.shape) >= 2:
-                    board = v
+            # Try to find first array-like value
+            for key, value in obs.items():
+                if isinstance(value, np.ndarray):
+                    board = value
                     break
+            else:
+                return None
     else:
         board = obs
     
-    # Handle channel dimension
-    if len(board.shape) == 3:
-        if board.shape[0] <= 4:  # (C, H, W)
-            board = board[0]
-        elif board.shape[2] <= 4:  # (H, W, C)
-            board = board[:, :, 0]
-    
-    # Ensure 2D
-    if len(board.shape) != 2:
-        raise ValueError(f"Cannot extract 2D board from shape {board.shape}")
-    
     # Normalize to [0, 1]
-    board = board.astype(np.float32)
-    if board.max() > 1:
-        board = board / 255.0
+    if board is not None and len(board.shape) >= 2:
+        if board.max() > 1:
+            board = (board > 0).astype(np.float32)
+        return board
     
-    return board
+    return None
 
 
 def get_column_heights(board):
     """
-    Calculate height of each column (number of filled cells from bottom).
-    
-    Args:
-        board: 2D array (H, W)
+    Get height of each column (highest filled cell).
     
     Returns:
-        heights: List of column heights
+        List of heights, one per column
     """
-    H, W = board.shape
-    heights = []
+    if board is None or len(board.shape) != 2:
+        return [0] * 10
     
-    for col in range(W):
-        height = 0
-        for row in range(H):
-            if board[row, col] > 0:
-                height = H - row
-                break
-        heights.append(height)
+    heights = []
+    height, width = board.shape
+    
+    for col in range(width):
+        column = board[:, col]
+        filled_rows = np.where(column > 0)[0]
+        
+        if len(filled_rows) > 0:
+            # Height is from bottom, so it's (total_height - lowest_filled_row)
+            col_height = height - filled_rows[0]
+        else:
+            col_height = 0
+        
+        heights.append(col_height)
     
     return heights
 
 
 def count_holes(board):
     """
-    Count holes (empty cells with filled cells above them).
+    Count holes: empty cells with filled cells above them.
     
-    Args:
-        board: 2D array (H, W)
-    
-    Returns:
-        holes: Number of holes
+    Holes are BAD because they're hard to fill.
     """
-    H, W = board.shape
-    holes = 0
+    if board is None or len(board.shape) != 2:
+        return 0
     
-    for col in range(W):
-        found_block = False
-        for row in range(H):
-            if board[row, col] > 0:
-                found_block = True
-            elif found_block:
-                holes += 1
+    holes = 0
+    height, width = board.shape
+    
+    for col in range(width):
+        column = board[:, col]
+        
+        # Find first filled cell from top
+        filled_rows = np.where(column > 0)[0]
+        
+        if len(filled_rows) > 0:
+            # Count empty cells below the topmost filled cell
+            top_filled = filled_rows[0]
+            holes += np.sum(column[top_filled:] == 0)
     
     return holes
 
 
 def calculate_bumpiness(heights):
     """
-    Calculate bumpiness (sum of absolute height differences between adjacent columns).
+    Calculate bumpiness: sum of absolute height differences.
     
-    Args:
-        heights: List of column heights
-    
-    Returns:
-        bumpiness: Total bumpiness score
+    Lower bumpiness = flatter surface = easier to clear lines.
     """
     if len(heights) < 2:
         return 0
@@ -119,135 +117,173 @@ def calculate_bumpiness(heights):
 
 def horizontal_distribution(board):
     """
-    Calculate how evenly pieces are distributed horizontally.
-    Rewards spreading pieces across all columns.
-    
-    Args:
-        board: 2D array (H, W)
+    Reward spreading pieces across columns (not stacking in one place).
     
     Returns:
-        distribution_score: Higher is better (range 0-1)
+        Score from 0 (all in one column) to 1 (evenly distributed)
     """
-    H, W = board.shape
+    if board is None or len(board.shape) != 2:
+        return 0
     
-    # Count non-empty cells per column
-    col_counts = [np.sum(board[:, col] > 0) for col in range(W)]
+    height, width = board.shape
+    column_counts = np.sum(board, axis=0)
     
-    if sum(col_counts) == 0:
-        return 1.0  # Empty board is perfectly distributed
+    if np.sum(column_counts) == 0:
+        return 1.0
     
-    # Calculate entropy (higher entropy = more spread out)
-    total = sum(col_counts)
-    probs = [c / total for c in col_counts if c > 0]
+    # Calculate entropy-like distribution
+    total = np.sum(column_counts)
+    probs = column_counts / total
+    probs = probs[probs > 0]  # Remove zeros
     
-    if len(probs) <= 1:
-        return 0.0  # All in one column is worst
+    if len(probs) == 0:
+        return 0
     
-    entropy = -sum(p * np.log(p + 1e-10) for p in probs)
-    max_entropy = np.log(W)
+    # Normalized entropy
+    max_entropy = np.log(width)
+    entropy = -np.sum(probs * np.log(probs + 1e-10))
     
-    return entropy / max_entropy if max_entropy > 0 else 0.0
+    return entropy / max_entropy
 
 
 def calculate_column_variance(heights):
     """
-    NEW: Calculate variance in column heights.
-    High variance means uneven stacking (bad).
+    Calculate variance in column heights.
     
-    Args:
-        heights: List of column heights
-    
-    Returns:
-        variance: Standard deviation of heights
+    Low variance = flat board = good.
     """
     if len(heights) == 0:
         return 0
-    return np.std(heights)
+    
+    return float(np.var(heights))
 
 
 def count_wells(heights):
     """
-    NEW: Count deep wells (columns significantly lower than neighbors).
-    Wells make it hard to place pieces.
+    Count "wells" (columns significantly lower than neighbors).
     
-    Args:
-        heights: List of column heights
-    
-    Returns:
-        well_penalty: Penalty for having wells
+    Wells make it hard to place pieces efficiently.
     """
     if len(heights) < 3:
         return 0
     
-    well_penalty = 0
-    for i in range(1, len(heights) - 1):
-        left = heights[i - 1]
-        center = heights[i]
-        right = heights[i + 1]
-        
-        # Check if center is significantly lower than both neighbors
-        if center < left - 2 and center < right - 2:
-            depth = min(left - center, right - center)
-            well_penalty += depth ** 2  # Quadratic penalty for deep wells
+    wells = 0
     
-    return well_penalty
+    for i in range(1, len(heights) - 1):
+        if heights[i] < heights[i-1] - 2 and heights[i] < heights[i+1] - 2:
+            wells += 1
+    
+    return wells
 
 
 def single_column_penalty(heights):
     """
-    NEW: Strong penalty for stacking in a single column.
+    MASSIVE penalty for stacking everything in one column.
     This is the main issue from your diagnostic output.
-    
-    Args:
-        heights: List of column heights
-    
-    Returns:
-        penalty: Large penalty if using only one column
     """
     non_zero = [h for h in heights if h > 0]
     
     if len(non_zero) == 0:
-        return 0
+        return 0.0
     
     if len(non_zero) == 1:
-        # MASSIVE penalty for single column
-        return -50.0 * non_zero[0]  # Gets worse as height increases
+        # MASSIVE penalty for single column (scales with height)
+        return -100.0 * non_zero[0]
     
     if len(non_zero) <= 2:
         # Large penalty for using only 2 columns
-        return -20.0 * max(non_zero)
+        return -40.0 * max(non_zero)
     
     if len(non_zero) <= 3:
         # Medium penalty for using only 3 columns
-        return -10.0 * max(non_zero)
+        return -20.0 * max(non_zero)
     
-    return 0
+    return 0.0
 
 
-def balanced_reward_shaping(obs, action, reward, done, info):
+def count_filled_rows(board):
     """
-    IMPROVED balanced reward shaping with anti-single-column penalties.
+    Count rows that are completely or mostly filled.
+    This gives intermediate reward for getting close to line clears.
+    """
+    if board is None or len(board.shape) != 2:
+        return 0
+    
+    height, width = board.shape
+    filled_count = 0
+    
+    for row in range(height):
+        row_sum = np.sum(board[row, :])
+        # Count as "filled" if >= 80% full
+        if row_sum >= width * 0.8:
+            filled_count += 1
+    
+    return filled_count
+
+
+# ============================================================================
+# REWARD SHAPING FUNCTIONS
+# ============================================================================
+
+def improved_balanced_reward_shaping(obs, action, reward, done, info):
+    """
+    IMPROVED balanced reward shaping designed to fix the zero-lines problem.
+    
+    Key improvements:
+    1. Exponential line clearing rewards (1000-16000)
+    2. Intermediate rewards for almost-full rows
+    3. Much stronger penalties for holes and height
+    4. Massive penalty for single-column stacking
+    5. Strong distribution bonuses
+    6. Small step penalty to encourage efficiency
     
     Args:
         obs: Current observation
-        action: Action taken
-        reward: Original reward from environment
-        done: Whether episode ended
-        info: Info dict from environment
+        action: Action taken (can be ignored for state-based shaping)
+        reward: Original environment reward
+        done: Whether episode is finished
+        info: Info dict with game stats
     
     Returns:
-        shaped_reward: Modified reward
+        float: Shaped reward
     """
     # Extract board
     try:
         board = extract_board_from_obs(obs)
-    except:
-        return reward
+        if board is None:
+            return -1.0  # Small penalty if can't extract board
+    except Exception:
+        return -1.0
     
-    # Base reward
-    shaped_reward = reward
+    shaped_reward = 0.0  # Start from 0, build up
     
-    # Calculate metrics
+    # ========================================
+    # 1. LINE CLEARING REWARDS (DOMINANT)
+    # ========================================
+    lines_keys = ['lines_cleared', 'cleared_lines', 'lines', 'n_lines', 'number_of_lines']
+    lines_cleared = 0
+    for key in lines_keys:
+        if key in info:
+            val = info.get(key, 0)
+            lines_cleared = val if val is not None else 0
+            break
+    
+    if lines_cleared > 0:
+        # EXPONENTIAL rewards: 1 line = 1000, 2 lines = 3000, 3 = 6000, 4 = 16000
+        line_rewards = [1000, 3000, 6000, 16000]
+        shaped_reward += line_rewards[min(lines_cleared - 1, 3)]
+    
+    # ========================================
+    # 2. INTERMEDIATE PROGRESS REWARDS
+    # ========================================
+    # Reward for having rows that are ALMOST complete
+    filled_rows = count_filled_rows(board)
+    if filled_rows > 0:
+        shaped_reward += 10.0 * filled_rows  # Reward progress toward line clears
+    
+    # ========================================
+    # 3. CALCULATE BOARD METRICS
+    # ========================================
     heights = get_column_heights(board)
     max_height = max(heights) if heights else 0
     avg_height = np.mean(heights) if heights else 0
@@ -258,47 +294,77 @@ def balanced_reward_shaping(obs, action, reward, done, info):
     wells = count_wells(heights)
     single_col = single_column_penalty(heights)
     
-    # Line clear bonus (multiplicative to make it dominant)
-    lines_keys = ['lines_cleared', 'cleared_lines', 'lines', 'n_lines', 'number_of_lines']
-    lines_cleared = 0
-    for key in lines_keys:
-        if key in info:
-            lines_cleared = info.get(key, 0) or 0
-            break
+    # ========================================
+    # 4. PENALTIES (MUCH STRONGER)
+    # ========================================
+    shaped_reward -= 5.0 * holes           # Holes are VERY bad (was 2.0)
+    shaped_reward -= 1.0 * max_height      # Discourage high stacks (was 0.5)
+    shaped_reward -= 0.5 * bumpiness       # Flat surface is good (was 0.3)
+    shaped_reward -= 2.0 * variance        # Even heights (was 1.5)
+    shaped_reward -= 2.0 * wells           # Wells trap pieces (was 0.5)
+    shaped_reward += single_col            # MASSIVE penalty (up to -100 * height)
     
-    if lines_cleared > 0:
-        shaped_reward += 100.0 * lines_cleared ** 2  # Quadratic bonus
+    # ========================================
+    # 5. BONUSES FOR GOOD PLAY
+    # ========================================
+    shaped_reward += 10.0 * distribution   # Reward spreading pieces (was 5.0)
     
-    # Penalties (INCREASED)
-    shaped_reward -= 2.0 * holes  # DOUBLED from 1.0
-    shaped_reward -= 0.5 * max_height  # INCREASED from 0.2
-    shaped_reward -= 0.3 * bumpiness  # INCREASED from 0.1
-    shaped_reward -= 1.5 * variance  # NEW: Penalty for uneven heights
-    shaped_reward -= 0.5 * wells  # NEW: Penalty for wells
-    shaped_reward += single_col  # NEW: MASSIVE penalty for single column
+    # Bonus for keeping board low
+    if max_height < 10:
+        shaped_reward += 5.0
+    elif max_height < 15:
+        shaped_reward += 2.0
     
-    # Distribution bonus (INCREASED to encourage spreading)
-    shaped_reward += 5.0 * distribution  # INCREASED from 2.0
+    # ========================================
+    # 6. STEP PENALTY (FORCE PROGRESS)
+    # ========================================
+    # Small penalty each step to encourage efficient play
+    # This prevents the agent from just moving pieces around forever
+    shaped_reward -= 1.0
     
-    # Death penalty
-    if done and reward <= 0:
-        shaped_reward -= 50.0
+    # ========================================
+    # 7. DEATH PENALTY
+    # ========================================
+    if done and lines_cleared == 0:
+        shaped_reward -= 100.0  # Big penalty for dying without progress
     
-    return shaped_reward
+    return float(shaped_reward)  # Ensure float return
 
 
 def aggressive_reward_shaping(obs, action, reward, done, info):
     """
     AGGRESSIVE reward shaping with even stronger penalties.
-    Use this if balanced still produces bad behavior.
+    Use this if improved_balanced still doesn't work.
+    
+    This is more punishing and may lead to more conservative play.
     """
     try:
         board = extract_board_from_obs(obs)
-    except:
-        return reward
+        if board is None:
+            return -1.0
+    except Exception:
+        return -1.0
     
-    shaped_reward = reward
+    shaped_reward = 0.0
     
+    # Line clearing (same as balanced)
+    lines_keys = ['lines_cleared', 'cleared_lines', 'lines', 'n_lines', 'number_of_lines']
+    lines_cleared = 0
+    for key in lines_keys:
+        if key in info:
+            val = info.get(key, 0)
+            lines_cleared = val if val is not None else 0
+            break
+    
+    if lines_cleared > 0:
+        line_rewards = [1000, 3000, 6000, 16000]
+        shaped_reward += line_rewards[min(lines_cleared - 1, 3)]
+    
+    # Intermediate progress
+    filled_rows = count_filled_rows(board)
+    shaped_reward += 15.0 * filled_rows  # Higher bonus
+    
+    # Metrics
     heights = get_column_heights(board)
     max_height = max(heights) if heights else 0
     holes = count_holes(board)
@@ -308,67 +374,95 @@ def aggressive_reward_shaping(obs, action, reward, done, info):
     wells = count_wells(heights)
     single_col = single_column_penalty(heights)
     
-    # Line clears
-    lines_keys = ['lines_cleared', 'cleared_lines', 'lines', 'n_lines', 'number_of_lines']
-    lines_cleared = 0
-    for key in lines_keys:
-        if key in info:
-            lines_cleared = info.get(key, 0) or 0
-            break
-    
-    if lines_cleared > 0:
-        shaped_reward += 200.0 * lines_cleared ** 2  # Even higher bonus
-    
-    # AGGRESSIVE penalties
-    shaped_reward -= 5.0 * holes  # 5x original
-    shaped_reward -= 1.0 * max_height  # 5x original
-    shaped_reward -= 0.5 * bumpiness  # 5x original
-    shaped_reward -= 3.0 * variance  # Strong variance penalty
-    shaped_reward -= 1.0 * wells  # Strong well penalty
-    shaped_reward += single_col * 2  # DOUBLE the single column penalty
+    # VERY STRONG penalties
+    shaped_reward -= 10.0 * holes          # 2x stronger
+    shaped_reward -= 2.0 * max_height      # 2x stronger
+    shaped_reward -= 1.0 * bumpiness       # 2x stronger
+    shaped_reward -= 3.0 * variance        # 1.5x stronger
+    shaped_reward -= 3.0 * wells           # 1.5x stronger
+    shaped_reward += single_col * 1.5      # 1.5x stronger (already massive)
     
     # Strong distribution bonus
-    shaped_reward += 10.0 * distribution  # 5x original
+    shaped_reward += 15.0 * distribution   # 1.5x stronger
+    
+    # Board height bonuses
+    if max_height < 10:
+        shaped_reward += 10.0
+    elif max_height < 15:
+        shaped_reward += 5.0
+    
+    # Step penalty
+    shaped_reward -= 1.5  # Slightly higher
     
     # Death penalty
-    if done and reward <= 0:
-        shaped_reward -= 100.0
+    if done and lines_cleared == 0:
+        shaped_reward -= 150.0  # Harsher
     
-    return shaped_reward
+    return float(shaped_reward)
 
 
 def positive_reward_shaping(obs, action, reward, done, info):
     """
-    Positive-only reward shaping (no penalties, only bonuses).
+    Positive-focused reward shaping (fewer penalties, more bonuses).
+    
+    Use this if the agent becomes too conservative with aggressive shaping.
     """
     try:
         board = extract_board_from_obs(obs)
-    except:
-        return reward
+        if board is None:
+            return 0.0
+    except Exception:
+        return 0.0
     
-    shaped_reward = max(0, reward)  # No negative rewards
+    shaped_reward = 0.0
     
-    heights = get_column_heights(board)
-    distribution = horizontal_distribution(board)
-    non_zero_cols = sum(1 for h in heights if h > 0)
-    
-    # Line clears
+    # Line clearing
     lines_keys = ['lines_cleared', 'cleared_lines', 'lines', 'n_lines', 'number_of_lines']
     lines_cleared = 0
     for key in lines_keys:
         if key in info:
-            lines_cleared = info.get(key, 0) or 0
+            val = info.get(key, 0)
+            lines_cleared = val if val is not None else 0
             break
     
     if lines_cleared > 0:
-        shaped_reward += 100.0 * lines_cleared ** 2
+        line_rewards = [1000, 3000, 6000, 16000]
+        shaped_reward += line_rewards[min(lines_cleared - 1, 3)]
     
-    # Positive bonuses only
-    shaped_reward += 5.0 * distribution  # Reward spreading
-    shaped_reward += 2.0 * non_zero_cols  # Reward using more columns
-    shaped_reward += 0.5  # Survival bonus each step
+    # Progress rewards
+    filled_rows = count_filled_rows(board)
+    shaped_reward += 20.0 * filled_rows  # Strong bonus for progress
     
-    return shaped_reward
+    # Metrics
+    heights = get_column_heights(board)
+    max_height = max(heights) if heights else 0
+    holes = count_holes(board)
+    distribution = horizontal_distribution(board)
+    single_col = single_column_penalty(heights)
+    
+    # Mild penalties (only for serious problems)
+    if holes > 3:
+        shaped_reward -= 3.0 * (holes - 3)  # Only penalize if >3 holes
+    
+    if max_height > 15:
+        shaped_reward -= 1.0 * (max_height - 15)  # Only if very high
+    
+    shaped_reward += single_col * 0.5  # Reduced penalty
+    
+    # Strong positive bonuses
+    shaped_reward += 15.0 * distribution  # Reward good distribution
+    
+    # Board state bonuses
+    if max_height < 10:
+        shaped_reward += 10.0
+    elif max_height < 15:
+        shaped_reward += 5.0
+    
+    # Survival bonus (small)
+    if not done:
+        shaped_reward += 0.5
+    
+    return float(shaped_reward)
 
 
 # Export all functions
@@ -381,7 +475,8 @@ __all__ = [
     'calculate_column_variance',
     'count_wells',
     'single_column_penalty',
-    'balanced_reward_shaping',
+    'count_filled_rows',
+    'improved_balanced_reward_shaping',
     'aggressive_reward_shaping',
     'positive_reward_shaping'
 ]

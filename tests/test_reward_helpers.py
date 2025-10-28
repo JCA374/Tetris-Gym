@@ -21,21 +21,38 @@ sys.path.insert(0, str(parent_dir))
 try:
     from src.reward_shaping import (
         get_column_heights,
-        calculate_aggregate_height,
         count_holes,
         calculate_bumpiness,
-        calculate_wells,
-        get_max_height,
+        count_wells,
         extract_board_from_obs,
         aggressive_reward_shaping,
         positive_reward_shaping,
-        balanced_reward_shaping
+        improved_balanced_reward_shaping,
+        horizontal_distribution,
+        calculate_column_variance,
+        single_column_penalty,
+        count_filled_rows
     )
     print("✅ Successfully imported all helper functions!")
 except ImportError as e:
     print(f"❌ Import error: {e}")
-    print("Make sure reward_shape.py is in the same directory")
+    print("Make sure reward_shaping.py is in the src directory")
     sys.exit(1)
+
+# Helper functions for backwards compatibility with old test code
+def calculate_aggregate_height(board):
+    """Calculate total height across all columns"""
+    heights = get_column_heights(board)
+    return sum(heights)
+
+def get_max_height(board):
+    """Get maximum column height"""
+    heights = get_column_heights(board)
+    return max(heights) if heights else 0
+
+# Alias for new function name
+balanced_reward_shaping = improved_balanced_reward_shaping
+calculate_wells = count_wells
 
 
 def create_test_board(scenario="empty"):
@@ -105,8 +122,8 @@ def test_scenario(name, board):
     agg_height = calculate_aggregate_height(board)
     max_h = get_max_height(board)
     holes = count_holes(board)
-    bump = calculate_bumpiness(board)
-    wells = calculate_wells(board)
+    bump = calculate_bumpiness(heights)
+    wells = calculate_wells(heights)
     
     print(f"\n📊 METRICS:")
     print(f"   Column Heights:    {heights}")
@@ -152,9 +169,10 @@ def test_edge_cases():
     # Test 1: Empty board
     print("\n1. Empty board (should all be 0)")
     empty = np.zeros((20, 10))
-    print(f"   Heights: {get_column_heights(empty)}")
+    empty_heights = get_column_heights(empty)
+    print(f"   Heights: {empty_heights}")
     print(f"   Holes: {count_holes(empty)}")
-    print(f"   Bumpiness: {calculate_bumpiness(empty)}")
+    print(f"   Bumpiness: {calculate_bumpiness(empty_heights)}")
     
     # Test 2: Full board
     print("\n2. Full board (should have no holes)")
@@ -166,8 +184,9 @@ def test_edge_cases():
     print("\n3. Single column filled")
     single = np.zeros((20, 10))
     single[:, 5] = 1
-    print(f"   Heights: {get_column_heights(single)}")
-    print(f"   Bumpiness: {calculate_bumpiness(single)}")
+    single_heights = get_column_heights(single)
+    print(f"   Heights: {single_heights}")
+    print(f"   Bumpiness: {calculate_bumpiness(single_heights)}")
     
     # Test 4: Observation extraction
     print("\n4. Observation extraction test")

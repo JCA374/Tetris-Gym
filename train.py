@@ -18,7 +18,7 @@ from config import (
 )
 from src.agent import Agent
 from src.reward_shaping import (
-    balanced_reward_shaping,
+    improved_balanced_reward_shaping,
     aggressive_reward_shaping,
     positive_reward_shaping
 )
@@ -164,7 +164,7 @@ def main():
     # Reward shaping
     shaper_map = {
         'none': lambda obs, a, r, d, i: r,
-        'balanced': balanced_reward_shaping,
+        'balanced': improved_balanced_reward_shaping,
         'aggressive': aggressive_reward_shaping,
         'positive': positive_reward_shaping
     }

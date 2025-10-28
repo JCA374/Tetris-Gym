@@ -47,24 +47,33 @@ class TrainingDiagnostic:
         """Find all training-related files"""
         print("\n🔍 SEARCHING FOR TRAINING FILES...")
         print("=" * 60)
-        
+
         files_found = {
             'checkpoints': [],
             'logs': [],
             'configs': []
         }
-        
+
+        # Search in both current directory and parent directory
+        search_dirs = ['.', '..']
+
         # Search for checkpoints
-        for pattern in ['models/*.pth', 'models/*.pkl', 'checkpoints/*.pth', '*.pth']:
-            files_found['checkpoints'].extend(glob.glob(pattern))
-        
+        for search_dir in search_dirs:
+            for pattern in ['models/*.pth', 'models/*.pkl', 'checkpoints/*.pth', '*.pth']:
+                full_pattern = os.path.join(search_dir, pattern)
+                files_found['checkpoints'].extend(glob.glob(full_pattern))
+
         # Search for logs
-        for pattern in ['logs/**/*.csv', 'logs/**/*.json', '*.csv', '*.json']:
-            files_found['logs'].extend(glob.glob(pattern, recursive=True))
-        
+        for search_dir in search_dirs:
+            for pattern in ['logs/**/*.csv', 'logs/**/*.json', '*.csv', '*.json']:
+                full_pattern = os.path.join(search_dir, pattern)
+                files_found['logs'].extend(glob.glob(full_pattern, recursive=True))
+
         # Search for configs
-        for pattern in ['config.json', 'config.py', '*/config.json']:
-            files_found['configs'].extend(glob.glob(pattern))
+        for search_dir in search_dirs:
+            for pattern in ['config.json', 'config.py', '*/config.json']:
+                full_pattern = os.path.join(search_dir, pattern)
+                files_found['configs'].extend(glob.glob(full_pattern))
         
         # Print findings
         for category, file_list in files_found.items():
@@ -223,8 +232,8 @@ class TrainingDiagnostic:
         print("\n" + "=" * 60)
         print("🔧 DIAGNOSTIC SUMMARY")
         print("=" * 60)
-        
-        if not self.checkpoint_data and not self.log_data:
+
+        if self.checkpoint_data is None and self.log_data is None:
             print("\n❌ No data available for diagnosis")
             print("\nPlease ensure you have either:")
             print("  • A checkpoint file (models/*.pth)")
