@@ -1,0 +1,44 @@
+diff --git a/tests/test_environment_rendering.py b/tests/test_environment_rendering.py
+--- a/tests/test_environment_rendering.py
++++ b/tests/test_environment_rendering.py
+@@
+-from gymnasium import make as gym_make
++from gymnasium import make as gym_make
++from src.env_wrapper import CompleteVisionWrapper
+@@
+-def create_env(render_mode=None):
+-    env = gym_make("tetris_gymnasium/Tetris", render_mode=render_mode)
+-    return env
++def create_env(render_mode=None):
++    env = gym_make("tetris_gymnasium/Tetris", render_mode=render_mode)
++    # Ensure we always get a clean (20,10) vision tensor without walls
++    env = CompleteVisionWrapper(env)
++    return env
+@@
+-def get_column_heights(board_2d):
+-    # board_2d comes from env observation; may include walls in some test envs (width 18)
+-    h, w = board_2d.shape
+-    if w == 18:
+-        # strip 4 side walls on each side → keep cols [4:14) = 10 cols
+-        board_2d = board_2d[:, 4:14]
+-    heights = []
+-    for c in range(board_2d.shape[1]):
+-        col = board_2d[:, c]
+-        nz = (col > 0).nonzero()[0]
+-        heights.append(0 if len(nz) == 0 else (board_2d.shape[0] - nz[0]))
+-    return heights
++def get_column_heights(board_2d):
++    """Return heights for the true 10-column playfield.
++    If walls are present (width 18), slice to cols [4:14]."""
++    h, w = board_2d.shape
++    if w == 18:
++        board_2d = board_2d[:, 4:14]
++    heights = []
++    for c in range(board_2d.shape[1]):
++        col = board_2d[:, c]
++        nz = (col > 0).nonzero()[0]
++        heights.append(0 if len(nz) == 0 else (board_2d.shape[0] - nz[0]))
++    return heights
+@@
+-    print(f"Non-zero columns: {len([x for x in heights if x>0])}/10")
++    print(f"Non-zero columns: {len([x for x in heights if x>0])}/10")

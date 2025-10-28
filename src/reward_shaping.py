@@ -12,107 +12,99 @@ Key Changes from Original:
 
 import numpy as np
 
+# reward_shaping.py — add this
+import numpy as np
 
+# ---- tiny helpers (you already have these in this file; reuse yours if present) ----
 def extract_board_from_obs(obs):
-    """
-    Extract the board from observation.
-    
-    Handles both dict and array observations.
-    Returns 2D numpy array normalized to [0, 1].
-    """
     if isinstance(obs, dict):
-        if 'board' in obs:
-            board = obs['board']
-        elif 'observation' in obs:
-            board = obs['observation']
-        else:
-            # Try to find first array-like value
-            for key, value in obs.items():
-                if isinstance(value, np.ndarray):
-                    board = value
-                    break
-            else:
+        b = obs.get("board") or obs.get("observation")
+        if b is None:
+            for v in obs.values():
+                if isinstance(v, np.ndarray):
+                    b = v; break
+            if b is None:
                 return None
     else:
-        board = obs
-    
-    # Normalize to [0, 1]
-    if board is not None and len(board.shape) >= 2:
-        if board.max() > 1:
-            board = (board > 0).astype(np.float32)
-        return board
-    
-    return None
-
+        b = obs
+    b = np.asarray(b)
+    if b.ndim == 3 and b.shape[-1] >= 1:
+        b = b[..., 0]
+    return (b > 0).astype(np.uint8)
 
 def get_column_heights(board):
-    """
-    Get height of each column (highest filled cell).
-    
-    Returns:
-        List of heights, one per column
-    """
-    if board is None or len(board.shape) != 2:
-        return [0] * 10
-    
+    H, W = board.shape
     heights = []
-    height, width = board.shape
-    
-    for col in range(width):
-        column = board[:, col]
-        filled_rows = np.where(column > 0)[0]
-        
-        if len(filled_rows) > 0:
-            # Height is from bottom, so it's (total_height - lowest_filled_row)
-            col_height = height - filled_rows[0]
-        else:
-            col_height = 0
-        
-        heights.append(col_height)
-    
+    for c in range(W):
+        col = board[:, c]
+        h = 0
+        for r in range(H):
+            if col[r]:
+                h = H - r
+                break
+        heights.append(h)
     return heights
 
-
 def count_holes(board):
-    """
-    Count holes: empty cells with filled cells above them.
-    
-    Holes are BAD because they're hard to fill.
-    """
-    if board is None or len(board.shape) != 2:
-        return 0
-    
+    H, W = board.shape
     holes = 0
-    height, width = board.shape
-    
-    for col in range(width):
-        column = board[:, col]
-        
-        # Find first filled cell from top
-        filled_rows = np.where(column > 0)[0]
-        
-        if len(filled_rows) > 0:
-            # Count empty cells below the topmost filled cell
-            top_filled = filled_rows[0]
-            holes += np.sum(column[top_filled:] == 0)
-    
+    for c in range(W):
+        seen = False
+        for r in range(H):
+            if board[r, c]:
+                seen = True
+            elif seen and not board[r, c]:
+                holes += 1
     return holes
 
-
 def calculate_bumpiness(heights):
+    return sum(abs(heights[i] - heights[i+1]) for i in range(len(heights)-1))
+
+# ---- Potential Φ(s) and PBRS shaping ----
+def _potential(board):
+    """Lower is better. Scale small to keep values stable."""
+    heights = get_column_heights(board)
+    max_h   = max(heights) if heights else 0
+    holes   = count_holes(board)
+    bump    = calculate_bumpiness(heights)
+    # weights chosen to rank states, not dwarf line rewards
+    return -( 2.0*max_h + 6.0*holes + 0.8*bump )
+
+def balanced_pbrs_reward(obs, action, base_reward, done, info, gamma=0.99):
     """
-    Calculate bumpiness: sum of absolute height differences.
-    
-    Lower bumpiness = flatter surface = easier to clear lines.
+    Potential-Based Reward Shaping:
+      r' = base_reward + gamma*Φ(s') - Φ(s)
+    Keep line clears huge (from base env), keep step penalties near-zero.
     """
-    if len(heights) < 2:
-        return 0
-    
-    bumpiness = 0
-    for i in range(len(heights) - 1):
-        bumpiness += abs(heights[i] - heights[i + 1])
-    
-    return bumpiness
+    # extract s (current) board
+    board_s = extract_board_from_obs(obs)
+    if board_s is None:
+        return float(base_reward)
+
+    phi_s = _potential(board_s)
+
+    # We can’t see s' here; compute Φ(s') from info['next_obs'] if you pass it,
+    # otherwise approximate using current obs after env.step in train loop.
+    # Minimal invasive approach: allow caller to pass info['next_board'].
+    next_board = info.get("next_board", None)
+    if next_board is not None:
+        board_sp = (np.asarray(next_board) > 0).astype(np.uint8)
+        phi_sp = _potential(board_sp)
+        shaped = base_reward + (gamma * phi_sp - phi_s)
+    else:
+        # Fallback: just add -phi_s to encourage moving toward better states.
+        shaped = base_reward - 0.1 * phi_s  # small weight if s' is unknown
+
+    # Optional tiny survival carrot; avoid big step penalties
+    if not done:
+        shaped += 0.1
+
+    # Small death penalty only to break ties
+    if done and info.get('lines_cleared', 0) == 0:
+        shaped -= 5.0
+
+    return float(shaped)
+
 
 
 def horizontal_distribution(board):

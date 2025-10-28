@@ -17,11 +17,13 @@ from config import (
     ACTION_ROTATE_CW, ACTION_ROTATE_CCW, ACTION_HARD_DROP, ACTION_SWAP
 )
 from src.agent import Agent
+
 from src.reward_shaping import (
-    improved_balanced_reward_shaping,
+    balanced_pbrs_reward,      # ← use PBRS under the "balanced" flag
     aggressive_reward_shaping,
     positive_reward_shaping
 )
+
 from src.training_logger import TrainingLogger
 from src.utils import make_dir
 
@@ -163,13 +165,14 @@ def main():
     
     # Reward shaping
     shaper_map = {
-        'none': lambda obs, a, r, d, i: r,
-        'balanced': improved_balanced_reward_shaping,
+        'none':      lambda obs, a, r, d, i: r,
+        'balanced':  balanced_pbrs_reward,       # ← PBRS here
         'aggressive': aggressive_reward_shaping,
-        'positive': positive_reward_shaping
+        'positive':   positive_reward_shaping,
     }
     shaper_fn = shaper_map[args.reward_shaping]
     print(f"Reward shaping: {args.reward_shaping}")
+
     
     # Training metrics
     lines_cleared_total = 0
@@ -220,6 +223,11 @@ def main():
             # Step environment
             next_obs, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
+
+            # Give the shaper Φ(s′): store next board in info
+            if isinstance(next_obs, np.ndarray):
+                info["next_board"] = next_obs[:, :, 0] if next_obs.ndim == 3 else next_obs
+
             
             # Store raw reward
             raw_reward = reward
