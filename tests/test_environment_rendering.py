@@ -3,6 +3,14 @@
 Test script to diagnose Tetris environment rendering and action issues
 """
 
+import sys
+import os
+from pathlib import Path
+
+# Add parent directory to path so we can import config and src modules
+parent_dir = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(parent_dir))
+
 import gymnasium as gym
 import numpy as np
 import tetris_gymnasium

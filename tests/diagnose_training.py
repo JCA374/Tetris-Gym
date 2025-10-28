@@ -11,6 +11,10 @@ import json
 import pickle
 from pathlib import Path
 
+# Add parent directory to path so we can import config and src modules
+parent_dir = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(parent_dir))
+
 try:
     import torch
     TORCH_AVAILABLE = True

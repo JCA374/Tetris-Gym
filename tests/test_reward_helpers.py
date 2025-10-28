@@ -11,9 +11,11 @@ Usage:
 import numpy as np
 import sys
 import os
+from pathlib import Path
 
-# Add parent directory to path so we can import from main project
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add parent directory to path so we can import config and src modules
+parent_dir = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(parent_dir))
 
 # Import the helper functions
 try:

@@ -1,6 +1,14 @@
 # diagnose_model.py
 """Diagnose why the model only outputs NOOP"""
 
+import sys
+import os
+from pathlib import Path
+
+# Add parent directory to path so we can import config and src modules
+parent_dir = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(parent_dir))
+
 import torch
 import numpy as np
 from config import make_env

@@ -4,6 +4,14 @@ Simple action test using your existing config.py
 This bypasses environment ID issues by using your working setup.
 """
 
+import sys
+import os
+from pathlib import Path
+
+# Add parent directory to path so we can import config and src modules
+parent_dir = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(parent_dir))
+
 import numpy as np
 from config import make_env, discover_action_meanings, ACTION_LEFT, ACTION_RIGHT, ACTION_HARD_DROP
 
