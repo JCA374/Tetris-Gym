@@ -157,7 +157,8 @@ def main():
     
     # Logger
     experiment_name = args.experiment_name or f"tetris_{int(time.time())}"
-    logger = TrainingLogger(LOG_DIR, experiment_name, config=vars(args))
+    logger = TrainingLogger(LOG_DIR, experiment_name)
+    logger.log_config(vars(args))
     print(f"✅ Logger initialized: {experiment_name}")
     
     # Reward shaping

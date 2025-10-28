@@ -133,6 +133,34 @@ def discover_action_meanings(env):
     
     return ACTION_MEANINGS
 
+
+def get_action_meanings():
+    """
+    Return action meanings as a dictionary mapping action_id -> meaning string
+    Must be called after discover_action_meanings(env) has been called
+    
+    Returns:
+        dict: {action_id: action_meaning_string}
+    """
+    global ACTION_MEANINGS
+    
+    if ACTION_MEANINGS is None:
+        # Return default mappings if not yet discovered
+        return {
+            0: 'NOOP',
+            1: 'LEFT',
+            2: 'RIGHT',
+            3: 'DOWN',
+            4: 'ROTATE_CW',
+            5: 'ROTATE_CCW',
+            6: 'HARD_DROP',
+            7: 'SWAP'
+        }
+    
+    # Convert list to dict
+    return {i: meaning for i, meaning in enumerate(ACTION_MEANINGS)}
+
+
 def make_env(render_mode="rgb_array", use_complete_vision=True, use_cnn=False):
     """Create Tetris environment with complete vision"""
     # Create base environment
@@ -162,65 +190,41 @@ class CompleteVisionWrapper(gym.ObservationWrapper):
     def __init__(self, env):
         super().__init__(env)
         
-        # Define new observation space - 3D with 1 channel
+        # Define observation space as 3D array (H, W, C)
+        # Assuming standard Tetris board: 20x10
+        height = env.unwrapped.height if hasattr(env.unwrapped, 'height') else 20
+        width = env.unwrapped.width if hasattr(env.unwrapped, 'width') else 10
+        
         self.observation_space = gym.spaces.Box(
             low=0,
             high=255,
-            shape=(20, 10, 1),
+            shape=(height, width, 1),
             dtype=np.uint8
         )
     
     def observation(self, obs):
-        """Convert dict observation to 3D array"""
+        """Convert observation to 3D array"""
+        # Handle dict observations
         if isinstance(obs, dict):
-            # Extract board from dict observation
-            board = obs.get('board', np.zeros((20, 10)))
-            
-            # Ensure binary values (0 or 1)
-            board = (board > 0).astype(np.uint8) * 255
-            
-            # Add channel dimension
-            board = board[:, :, np.newaxis]
-            
-            return board
+            # Try to get board from common keys
+            board = obs.get('board', obs.get('observation', None))
+            if board is None:
+                # If no board key, use first array value
+                board = next(iter(obs.values()))
         else:
-            # Already an array, just ensure correct shape
-            if len(obs.shape) == 2:
-                obs = obs[:, :, np.newaxis]
-            return obs
-
-
-def test_environment():
-    """Test that environment is working correctly"""
-    print("\n" + "="*60)
-    print("Testing Tetris Environment")
-    print("="*60)
-    
-    env = make_env(use_complete_vision=True)
-    obs, info = env.reset()
-    
-    print(f"\n✅ Environment test:")
-    print(f"   Observation shape: {obs.shape}")
-    print(f"   Expected: (20, 10, 1)")
-    
-    # Test a few steps with different actions
-    test_actions = [ACTION_LEFT, ACTION_RIGHT, ACTION_HARD_DROP]
-    for action in test_actions:
-        obs, reward, terminated, truncated, info = env.step(action)
-        if terminated or truncated:
-            obs, info = env.reset()
-    
-    env.close()
-    print(f"✅ Environment works correctly!")
-    
-    return True
-
-
-if __name__ == "__main__":
-    test_environment()
-    
-    print("\n✅ Configuration ready!")
-    print(f"\nAction mappings discovered:")
-    print(f"  LEFT: {ACTION_LEFT}")
-    print(f"  RIGHT: {ACTION_RIGHT}")
-    print(f"  HARD_DROP: {ACTION_HARD_DROP}")
+            board = obs
+        
+        # Ensure board is 2D
+        if len(board.shape) == 3:
+            # If already 3D, take first channel or flatten
+            if board.shape[0] <= 4:  # Channels first
+                board = board[0]
+            else:  # Channels last
+                board = board[:, :, 0]
+        
+        # Add channel dimension and ensure uint8
+        board = board.astype(np.uint8)
+        if len(board.shape) == 2:
+            board = np.expand_dims(board, axis=-1)
+        
+        return board
